@@ -12,6 +12,7 @@ process.env.GATE_GROUP_DEBOUNCE_MS = "30";
 process.env.NAPCAT_SEND_INTERVAL_MS = "0";
 process.env.LOG_LEVEL = "silent";
 process.env.MEMORY_LEARN_DELAY_MS = "50";
+process.env.REPLY_FORWARD_PARTS = "3";
 
 const { ChatRuntime } = await import("../src/chat/runtime.js");
 const { MemoryStore } = await import("../src/chat/memory.js");
@@ -19,6 +20,7 @@ type Deps = ConstructorParameters<typeof ChatRuntime>[0];
 
 const SELF = 100;
 let nextId = 1000;
+let forwardFails = false;
 
 function groupMessage(text: string, extra: Record<string, unknown>[] = [], groupId = 500, userId = 7) {
   return {
@@ -40,6 +42,7 @@ function setup(judge: Deps["judge"], replies: string[], memory?: Deps["memory"],
   const systems: string[] = [];
   const actions: string[] = [];
   const tools: unknown[] = [];
+  const forwards: { target: unknown; nodes: unknown[] }[] = [];
   globalThis.fetch = (async (_url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body));
     tools.push(body.tools);
@@ -53,6 +56,11 @@ function setup(judge: Deps["judge"], replies: string[], memory?: Deps["memory"],
       sent.push({ target, message });
       return nextId++;
     },
+    sendForward: async (target: unknown, nodes: unknown[]) => {
+      if (forwardFails) throw new Error("forward unsupported");
+      forwards.push({ target, nodes });
+      return nextId++;
+    },
     callAction: async (action: string, params: { user_id?: number }) => {
       actions.push(action);
       if (action === "get_group_member_info") {
@@ -61,7 +69,7 @@ function setup(judge: Deps["judge"], replies: string[], memory?: Deps["memory"],
       return { status: "ok" as const, retcode: 0, data: { group_name: "测试群" } };
     },
   } as unknown as Deps["client"];
-  return { runtime: new ChatRuntime({ client, judge, search, stickers: undefined, memory }), sent, prompts, systems, actions, tools };
+  return { runtime: new ChatRuntime({ client, judge, search, stickers: undefined, memory }), sent, prompts, systems, actions, tools, forwards };
 }
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -243,4 +251,47 @@ test("web_search is offered when jev scores it above 0.1 and the token is usable
   assert.equal((tools[0] as { function: { name: string } }[])[0]!.function.name, "web_search");
   assert.equal(tools[1], undefined);
   assert.equal(tools[2], undefined);
+});
+
+test("long replies are sent as one merged forward, with a plain fallback", async () => {
+  const at = { type: "at", data: { qq: String(SELF) } };
+  const long = "展开讲讲👇\n第一点\n第二点\n第三点\n第四点";
+  const { runtime, sent, forwards } = setup(async () => ({ should_reply: 0.9, addressed: 0.9 }), [long, long]);
+  runtime.handle(groupMessage("详细说说", [at]));
+  await wait(2500);
+  assert.deepEqual(sent.map((item) => item.message), [[{ type: "text", data: { text: "展开讲讲👇" } }]]);
+  assert.equal(forwards.length, 1);
+  const node = (forwards[0]!.nodes as { type: string; data: { nickname: string; content: unknown } }[])[0]!;
+  assert.equal(node.type, "node");
+  assert.equal(node.data.nickname, "小猫");
+  assert.deepEqual(node.data.content, [{ type: "text", data: { text: "第一点\n第二点\n第三点\n第四点" } }]);
+
+  forwardFails = true;
+  runtime.handle(groupMessage("再说一次", [at]));
+  await wait(9000);
+  forwardFails = false;
+  assert.equal(sent.length, 1 + 1 + 4);
+});
+
+test("pictures are described before jev sees them", async () => {
+  const seen: string[] = [];
+  const { runtime } = setup(async (state) => {
+    seen.push((state as { new_messages: { text: string }[] }).new_messages[0]!.text);
+    return { should_reply: 0.1, addressed: 0.1 };
+  }, []);
+  const images = { observe: async () => "手机设置页面的截图" };
+  (runtime as unknown as { deps: { images: unknown } }).deps.images = images;
+  runtime.handle(groupMessage("你看图片了吗", [{ type: "image", data: { file: "p.png", url: "https://x/p.png", sub_type: 0 } }]));
+  await wait(300);
+  assert.deepEqual(seen, ["[图片：手机设置页面的截图]你看图片了吗"]);
+});
+
+test("@名字 in a reply becomes a real mention of a known member", async () => {
+  const { runtime, sent } = setup(async () => ({ should_reply: 0.9, addressed: 0.9 }), ["@张三 你问的是这个？"]);
+  runtime.handle(groupMessage("在吗", [{ type: "at", data: { qq: String(SELF) } }], 500, 7));
+  await wait(200);
+  assert.deepEqual(sent.at(-1)!.message.slice(0, 2), [
+    { type: "at", data: { qq: "7" } },
+    { type: "text", data: { text: " " } },
+  ]);
 });

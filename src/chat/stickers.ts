@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import type { Segment } from "../napcat/types.js";
+import { cleanDescription, dataUrl, downloadImage, type Describe } from "./media.js";
 
 export type Sticker = {
   id: number;
@@ -19,21 +20,9 @@ export type Sticker = {
   lastSeen: number;
 };
 
-export type Describe = (dataUrl: string) => Promise<string>;
-
 const MAX_BYTES = 3 * 1024 * 1024;
 const DESCRIBE_PROMPT =
   "这是聊天里的一个表情包。用一句话说出它表达的情绪或意思。图上有文字就把文字原样写进这句话；没有文字就不要提文字。只输出这句话。";
-
-// Vision output often notes the absence of text ("（图中无文字）"), which is noise in chat context.
-export function cleanDescription(text: string): string {
-  return text
-    .replace(/\s+/g, " ")
-    .replace(/[（(][^（）()]*(?:无|没有)[^（）()]*文字[^（）()]*[）)]/g, "")
-    .replace(/(?:图片|图中|图上|图内|画面)?(?:中|上|里)?(?:没有|无)(?:任何)?文字[，,、；;。]?/g, "")
-    .replace(/^[，,、；;\s]+/, "")
-    .trim();
-}
 
 function stickerKey(segment: Segment): string | undefined {
   if (segment.type === "mface") {
@@ -42,16 +31,6 @@ function stickerKey(segment: Segment): string | undefined {
   }
   const source = segment.data.file ?? segment.data.url;
   return typeof source === "string" && source ? `image:${source}` : undefined;
-}
-
-export function sniffMime(bytes: Buffer): string | undefined {
-  if (bytes.subarray(0, 3).toString("ascii") === "GIF") return "image/gif";
-  if (bytes[0] === 0x89 && bytes.subarray(1, 4).toString("ascii") === "PNG") return "image/png";
-  if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
-  if (bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP") {
-    return "image/webp";
-  }
-  return undefined;
 }
 
 export class StickerStore {
@@ -100,10 +79,14 @@ export class StickerStore {
     return (await task)?.description;
   }
 
+  // The ones people post most, in random order: ranking by the bot's own use would feed on itself.
   list(limit = config.stickers.promptLimit): Sticker[] {
-    return [...this.stickers.values()]
-      .sort((a, b) => b.seen + b.used * 2 - (a.seen + a.used * 2) || b.lastSeen - a.lastSeen)
-      .slice(0, limit);
+    const top = [...this.stickers.values()].sort((a, b) => b.seen - a.seen || b.lastSeen - a.lastSeen).slice(0, limit);
+    for (let i = top.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [top[i], top[j]] = [top[j]!, top[i]!];
+    }
+    return top;
   }
 
   byId(id: number): Sticker | undefined {
@@ -131,14 +114,9 @@ export class StickerStore {
     const url = typeof segment.data.url === "string" ? segment.data.url : undefined;
     if (!url) return undefined;
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
-      if (!response.ok) throw new Error(`下载失败 ${response.status}`);
-      const bytes = Buffer.from(await response.arrayBuffer());
-      if (bytes.length > MAX_BYTES) throw new Error(`太大 ${bytes.length}`);
-      const mime = sniffMime(bytes);
-      if (!mime) throw new Error("不是可识别的图片");
-
-      const description = cleanDescription(await this.describe(`data:${mime};base64,${bytes.toString("base64")}`));
+      const image = await downloadImage(url, MAX_BYTES);
+      const { bytes, mime } = image;
+      const description = cleanDescription(await this.describe(dataUrl(image)));
       if (!description) throw new Error("描述为空");
 
       const file = `${createHash("sha1").update(key).digest("hex").slice(0, 16)}.${mime.split("/")[1]}`;

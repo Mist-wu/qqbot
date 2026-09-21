@@ -93,17 +93,30 @@ export class NapcatClient {
     });
   }
 
-  // Sends are serialized with a minimum gap so bursts of reply parts do not trip QQ risk control.
   sendMessage(target: SendTarget, message: Segment[]): Promise<number | undefined> {
+    return this.enqueue(() =>
+      target.groupId !== undefined
+        ? this.callAction<{ message_id: number }>("send_group_msg", { group_id: target.groupId, message })
+        : this.callAction<{ message_id: number }>("send_private_msg", { user_id: target.userId, message }),
+    );
+  }
+
+  // Merged-forward message made of "node" segments.
+  sendForward(target: SendTarget, nodes: Segment[]): Promise<number | undefined> {
+    return this.enqueue(() =>
+      target.groupId !== undefined
+        ? this.callAction<{ message_id: number }>("send_group_forward_msg", { group_id: target.groupId, messages: nodes })
+        : this.callAction<{ message_id: number }>("send_private_forward_msg", { user_id: target.userId, messages: nodes }),
+    );
+  }
+
+  // Sends are serialized with a minimum gap so bursts of reply parts do not trip QQ risk control.
+  private enqueue(send: () => Promise<ActionResponse<{ message_id: number }>>): Promise<number | undefined> {
     const task = this.sendChain.then(async () => {
       const wait = this.lastSendAt + config.napcat.sendIntervalMs - Date.now();
       if (wait > 0) await sleep(wait);
       this.lastSendAt = Date.now();
-      const response =
-        target.groupId !== undefined
-          ? await this.callAction<{ message_id: number }>("send_group_msg", { group_id: target.groupId, message })
-          : await this.callAction<{ message_id: number }>("send_private_msg", { user_id: target.userId, message });
-      return response.data?.message_id;
+      return (await send()).data?.message_id;
     });
     this.sendChain = task.catch(() => undefined);
     return task;

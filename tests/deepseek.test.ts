@@ -4,9 +4,9 @@ import { test } from "node:test";
 process.env.DEEPSEEK_API_KEY = "test-key";
 process.env.DEEPSEEK_MAX_TOOL_ROUNDS = "2";
 
-const { chatWithTools, DEEPSEEK_MODEL } = await import("../src/llm/deepseek.js");
+const { chatWithTools, completeJson, DEEPSEEK_MODEL } = await import("../src/llm/deepseek.js");
 
-type Body = { model: string; messages: any[]; tools?: unknown[]; thinking: { type: string } };
+type Body = { model: string; messages: any[]; tools?: unknown[]; thinking: { type: string }; temperature?: number };
 
 function mockFetch(responses: unknown[]): Body[] {
   const bodies: Body[] = [];
@@ -51,6 +51,7 @@ test("runs tools and passes reasoning_content back", async () => {
   assert.deepEqual(log, ["答案"]);
   assert.equal(bodies[0]!.model, DEEPSEEK_MODEL);
   assert.equal(bodies[0]!.model, "deepseek-flash");
+  assert.equal(bodies[0]!.temperature, 1.3);
   const second = bodies[1]!.messages;
   assert.equal(second[1].role, "assistant");
   assert.equal(second[1].reasoning_content, "需要查一下");
@@ -79,4 +80,17 @@ test("bad tool arguments are reported to the model instead of throwing", async (
   ]);
   assert.equal(await chatWithTools([{ role: "user", content: "q" }], [searchTool([])]), "ok");
   assert.equal(bodies[1]!.messages.at(-1).content, "工具参数不是合法 JSON");
+});
+
+test("JSON extraction retries once on malformed output and uses default temperature", async () => {
+  const bodies = mockFetch([
+    { choices: [{ message: { content: '{"people":[{"user_id":1 "facts":[]}]}' } }] },
+    { choices: [{ message: { content: '{"people":[]}' } }] },
+  ]);
+  assert.deepEqual(await completeJson("sys json", "user"), { people: [] });
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0]!.temperature, undefined);
+
+  mockFetch([{ choices: [{ message: { content: "{bad" } }] }, { choices: [{ message: { content: "{bad" } }] }]);
+  await assert.rejects(completeJson("sys json", "user"));
 });

@@ -4,8 +4,8 @@ import type { Segment } from "./types.js";
 export type RenderContext = {
   selfId?: number;
   botName: string;
-  // Description of a sticker segment, when known.
-  stickerText?: (segment: Segment) => string | undefined;
+  // Description of a sticker or picture segment, when known.
+  imageText?: (segment: Segment) => string | undefined;
   // Display name of an @-mentioned user, when known.
   atName?: (userId: number) => string | undefined;
 };
@@ -20,7 +20,6 @@ const PLACEHOLDERS: Record<string, string> = {
   node: "[合并转发]",
   json: "[卡片]",
   xml: "[卡片]",
-  markdown: "[消息]",
   poke: "[戳一戳]",
   contact: "[名片]",
   location: "[位置]",
@@ -39,12 +38,40 @@ function asId(value: unknown): number | undefined {
   return typeof id === "number" && Number.isSafeInteger(id) ? id : undefined;
 }
 
+// Markdown messages often wrap text in LaTeX styling such as $\textcolor{red}{就}$; keep the text.
+const LATEX_TWO_ARG = /\\(?:textcolor|colorbox|scalebox|color)\{[^{}]*\}\{([^{}]*)\}/g;
+const LATEX_ONE_ARG = /\\(?:text|textbf|textit|mathbf|mathrm|boxed|underline)\{([^{}]*)\}/g;
+
+export function markdownToText(content: string): string {
+  let text = content;
+  for (let previous = ""; previous !== text; ) {
+    previous = text;
+    text = text.replace(LATEX_TWO_ARG, "$1").replace(LATEX_ONE_ARG, "$1");
+  }
+  return text
+    .replace(/\\[a-zA-Z]+\s?/g, "")
+    .replace(/[${}]/g, "")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*|__/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+}
+
 export function renderSegments(segments: Segment[], ctx: RenderContext): string {
+  // Markdown messages repeat their content in a fallback text segment; render it once.
+  const markdown = new Set(
+    segments.filter((seg) => seg.type === "markdown").map((seg) => String(seg.data.content ?? "")),
+  );
   const parts: string[] = [];
   for (const seg of segments) {
     switch (seg.type) {
-      case "text":
-        parts.push(String(seg.data.text ?? ""));
+      case "text": {
+        const text = String(seg.data.text ?? "");
+        if (!markdown.has(text)) parts.push(text);
+        break;
+      }
+      case "markdown":
+        parts.push(markdownToText(String(seg.data.content ?? "")));
         break;
       case "at": {
         if (seg.data.qq === "all") {
@@ -61,8 +88,9 @@ export function renderSegments(segments: Segment[], ctx: RenderContext): string 
       case "image":
       case "mface": {
         const sticker = isSticker(seg);
-        const description = sticker ? ctx.stickerText?.(seg) : undefined;
-        parts.push(description ? `[表情包：${description}]` : sticker ? "[表情包]" : "[图片]");
+        const description = ctx.imageText?.(seg);
+        const label = sticker ? "表情包" : "图片";
+        parts.push(description ? `[${label}：${description}]` : `[${label}]`);
         break;
       }
       case "face": {
@@ -107,8 +135,7 @@ export function textSegment(text: string): Segment {
   return { type: "text", data: { text } };
 }
 
-// Turns known QQ face names written as [名称] into real face segments; anything else stays text.
-export function textToSegments(text: string): Segment[] {
+function facesToSegments(text: string): Segment[] {
   const segments: Segment[] = [];
   let cursor = 0;
   for (const match of text.matchAll(/\[([^\[\]\s]{1,8})\]/g)) {
@@ -119,6 +146,35 @@ export function textToSegments(text: string): Segment[] {
     cursor = match.index + match[0].length;
   }
   if (cursor < text.length) segments.push(textSegment(text.slice(cursor)));
+  return segments;
+}
+
+// Turns known QQ face names written as [名称] into faces, and "@名字" of known members into real
+// mentions (longest name wins, since group cards may contain spaces); anything else stays text.
+export function textToSegments(text: string, members: Map<string, number> = new Map()): Segment[] {
+  const names = [...members.keys()].filter(Boolean).sort((a, b) => b.length - a.length);
+  const segments: Segment[] = [];
+  let buffer = "";
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === "@") {
+      const name = names.find((candidate) => text.startsWith(candidate, i + 1));
+      if (name) {
+        if (buffer) segments.push(...facesToSegments(buffer));
+        buffer = "";
+        segments.push({ type: "at", data: { qq: String(members.get(name)) } });
+        i += name.length + 1;
+        if (text[i] === " ") i++;
+        segments.push(textSegment(" "));
+        continue;
+      }
+    }
+    buffer += text[i];
+    i++;
+  }
+  if (buffer) segments.push(...facesToSegments(buffer));
+  // Drop the spacer after a trailing mention.
+  if (segments.at(-1)?.type === "text" && segments.at(-1)?.data.text === " ") segments.pop();
   return segments;
 }
 

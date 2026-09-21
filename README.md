@@ -20,17 +20,18 @@
 - **像群友一样判断时机**：新消息先攒一小批，交给 [jev](https://typesafe.ai)（TypeSafe AI 的决策模型）给出“该不该接话”的概率。被 @ 或被回复只是降低门槛，“哈哈哈”之类的收尾照样可以不回。
 - **只用 deepseek-flash 说话**：提示词只交代事实（QQ 不渲染 Markdown、每行是一条消息、可以选择不说），不规定长度语气，也不给示例句。
 - **表情包**：自动收藏群友发的表情包，用 deepseek-flash 识图写描述；模型想发时自己挑。QQ 小黄脸按名字收发（`[doge]` 会发成真表情）。
-- **连发多条**：每行一条消息，按打字速度间隔发出。
+- **看得懂图片**：普通图片也用 deepseek-flash 识图，以 `[图片：描述]` 出现在聊天记录里。
+- **连发多条，长了就合并转发**：每行一条消息，按打字速度间隔发出；回复长到超过 5 行或 300 字时，正文打包成一条合并转发，不刷屏。
 - **联网搜索**：jev 觉得可能需要查资料时给模型挂上 `web_search`，走 Codex（ChatGPT 订阅）的搜索接口，搜不搜由模型决定。
 - **长期记忆**：按人记住聊过的事，群聊和私聊分开记；私聊里说的，到群里它也知道，提不提由它自己判断。
-- **@ 显示名字**：被 @ 的人显示群名片，不会把 QQ 号念出来。
+- **@ 显示名字**：被 @ 的人显示群名片，不会把 QQ 号念出来；它回复里写的 `@名字` 会发成真正的 @。
 
 ## 工作原理
 
 ```
-NapCat ──WS──> 收消息 ──防抖合并──> jev 判断 ──是──> deepseek-flash 生成 ──> 分条发送（文字 / 表情 / 表情包）
+NapCat ──WS──> 收消息 ──防抖合并──> jev 判断 ──是──> deepseek-flash 生成 ──> 分条发送 / 合并转发
                  │                   │                  │
-                 ├─表情包─> 识图描述   └─否─> 不发言       ├─needs_search > 0.1 ─> 挂上 web_search（Codex）
+                 ├─图片/表情包─> 识图   └─否─> 不发言       ├─needs_search > 0.1 ─> 挂上 web_search（Codex）
                  └─@某人─> 查群名片                        └─提示词带上相关的人的长期记忆
 ```
 
@@ -135,7 +136,7 @@ deploy/sync-codex-auth.sh user@your-server
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `BOT_PERSONA` | 是群里的一员。 | 人设，接在“你是「名字」，”后面 |
+| `BOT_PERSONA` | 是群里的一个 AI 群友。 | 人设，接在“你是「名字」，”后面；写得越具体，说话越有性格 |
 | `BOT_ALIASES` | | 群友对它的其他称呼，被叫到时 jev 能看到 |
 | `GATE_GROUP_THRESHOLD` | 0.6 | 群聊发言阈值，调低更活跃 |
 | `GATE_PRIVATE_THRESHOLD` | 0.35 | 私聊发言阈值 |
@@ -143,13 +144,17 @@ deploy/sync-codex-auth.sh user@your-server
 | `GATE_SEARCH_THRESHOLD` | 0.1 | `needs_search` 高于它就挂上搜索工具 |
 | `GATE_GROUP_DEBOUNCE_MS` | 3000 | 群里等消息停下多久再判断 |
 | `DEEPSEEK_THINKING` | false | deepseek-flash 的思考模式 |
+| `DEEPSEEK_TEMPERATURE` | 1.3 | 回复的采样温度，DeepSeek 对对话的推荐值，也能减少复读 |
+| `REPLY_FORWARD_PARTS` / `REPLY_FORWARD_CHARS` | 5 / 300 | 回复超过这么多行或字就改发合并转发 |
+| `IMAGES_ENABLED` | true | 普通图片识图 |
 | `STICKERS_MAX` | 300 | 表情包收藏上限，满了淘汰最少用的 |
 | `MEMORY_LEARN_DELAY_MS` | 10000 | 回复后等对话停下多久整理记忆 |
 | `MEMORY_LEARN_BATCH` | 30 | 未整理的消息攒够这么多就整理 |
 
 ## 表情包与记忆
 
-- **表情包**：收藏表情和商城表情第一次出现时下载下来，deepseek-flash 识图写一句描述，存在 `data/stickers/`。聊天记录里显示为 `[表情包：描述]`，常用的 40 张随系统提示词给模型，它单独一行写 `[表情包#编号]` 就会发出去。
+- **表情包**：收藏表情和商城表情第一次出现时下载下来，deepseek-flash 识图写一句描述，存在 `data/stickers/`。聊天记录里显示为 `[表情包：描述]`；群友发得最多的 40 张打乱顺序后随系统提示词给模型（不按它自己用过的次数排，免得越用越偏向那几张），它单独一行写 `[表情包#编号]` 就会发出去。
+- **普通图片**：同样识图，但只在内存里缓存描述，不保存图片。
 - **QQ 小黄脸**：收到的显示为 `[名称]`；模型写出已知名称时发成真表情。名称表 [`src/napcat/faces.ts`](src/napcat/faces.ts) 取自 QQ NT 客户端的 `default_config.json`。
 - **记忆**：bot 回复过后等对话停下，或未整理的消息攒够一批时，让 deepseek-flash 更新对每个发言者的记忆（新信息、被纠正的、过时的）。按 QQ 号存在 `data/memory.json`，群聊和私聊分开记。回复时带上聊天里出现的人、以及被 @ 的人的记忆，私聊学到的标注“私聊里告诉你的”。
 - 已有聊天记录可以补学一遍：先停掉 bot，再运行 `pnpm learn-history [条数]`，它会从 NapCat 拉白名单私聊和群的最近记录。
@@ -172,11 +177,13 @@ src/
 ├── chat/
 │   ├── runtime.ts        会话：防抖、判断、回复、发送、触发记忆整理
 │   ├── gate.ts           jev 问题与阈值、无 jev 时的兜底
-│   ├── reply.ts          提示词、输出解析（文字行 / 表情包）
+│   ├── reply.ts          提示词、输出解析（文字行 / 表情包）、分条或合并转发
 │   ├── stickers.ts       表情包收藏、识图描述、重发
+│   ├── images.ts         普通图片识图
+│   ├── media.ts          图片下载、格式识别、描述清理
 │   ├── memory.ts         长期记忆
 │   └── history.ts        会话消息记录
-├── llm/deepseek.ts       deepseek-flash：工具循环、识图、JSON
+├── llm/deepseek.ts       deepseek-flash：工具循环、识图、JSON（失败重试一次）
 ├── search/               Codex access token 读取、web_search
 └── cli/learn-history.ts  从历史记录补学记忆
 ```

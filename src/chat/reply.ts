@@ -19,6 +19,10 @@ export type ReplyContext = {
 
 export type ReplyPart = { kind: "text"; text: string } | { kind: "sticker"; id: number };
 
+export type Outgoing = { kind: "part"; part: ReplyPart } | { kind: "forward"; text: string };
+
+const LEAD_MAX_CHARS = 30;
+
 const STICKER_MARKER = /\[表情包#(\d+)\]/g;
 
 function clock(time: number): string {
@@ -88,6 +92,25 @@ function pushText(parts: ReplyPart[], text: string): void {
   if (!trimmed) return;
   const capped = trimmed.length > config.reply.maxChars ? `${trimmed.slice(0, config.reply.maxChars)}…` : trimmed;
   parts.push({ kind: "text", text: capped });
+}
+
+// Short replies go out line by line; a long one becomes a single merged-forward message, keeping a
+// short opening line (and any stickers) as ordinary messages.
+export function planSends(parts: ReplyPart[]): Outgoing[] {
+  const texts = parts.filter((part): part is Extract<ReplyPart, { kind: "text" }> => part.kind === "text");
+  const chars = texts.reduce((sum, part) => sum + part.text.length, 0);
+  if (texts.length <= config.reply.forwardParts && chars <= config.reply.forwardChars) {
+    return parts.map((part) => ({ kind: "part", part }));
+  }
+  const plan: Outgoing[] = [];
+  let body = texts;
+  if (texts.length > 1 && texts[0]!.text.length <= LEAD_MAX_CHARS) {
+    plan.push({ kind: "part", part: texts[0]! });
+    body = texts.slice(1);
+  }
+  plan.push({ kind: "forward", text: body.map((part) => part.text).join("\n") });
+  for (const part of parts) if (part.kind === "sticker") plan.push({ kind: "part", part });
+  return plan;
 }
 
 export function webSearchTool(search: CodexWebSearch, question: string): Tool {

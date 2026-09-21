@@ -10,8 +10,9 @@
 - `src/napcat/` WS client, OneBot types, segment rendering
 - `src/chat/gate.ts` jev questions, thresholds, fallback rules
 - `src/chat/runtime.ts` per-session debounce, decide, reply, send
-- `src/chat/reply.ts` prompts and output parsing (text lines, `[表情包#id]`)
+- `src/chat/reply.ts` prompts, output parsing (text lines, `[表情包#id]`), line-by-line vs merged-forward plan
 - `src/chat/stickers.ts` sticker collection, vision descriptions, resend
+- `src/chat/images.ts` / `media.ts` picture descriptions and shared image helpers
 - `src/chat/memory.ts` per-person long-term memory (group/private scopes), learned after replies
 - `src/cli/learn-history.ts` one-off memory backfill from NapCat history
 - `src/llm/deepseek.ts` chat completions with tool loop

@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import { createJevJudge } from "./chat/gate.js";
 import { ChatRuntime } from "./chat/runtime.js";
+import { ImageDescriber, describeImageWith } from "./chat/images.js";
 import { MemoryStore } from "./chat/memory.js";
 import { StickerStore, describeSticker } from "./chat/stickers.js";
 import { DEEPSEEK_MODEL, completeJson, describeImage } from "./llm/deepseek.js";
@@ -32,6 +33,8 @@ async function main(): Promise<void> {
     await stickers.load();
   }
 
+  const images = config.images.enabled ? new ImageDescriber(describeImageWith(describeImage)) : undefined;
+
   let memory: MemoryStore | undefined;
   if (config.memory.enabled) {
     memory = new MemoryStore(config.memory.file, completeJson);
@@ -48,7 +51,7 @@ async function main(): Promise<void> {
   const client = new NapcatClient((event) => {
     if (isMessageEvent(event)) runtime?.handle(event);
   });
-  runtime = new ChatRuntime({ client, judge, search, stickers, memory });
+  runtime = new ChatRuntime({ client, judge, search, stickers, images, memory });
   client.connect();
 
   const shutdown = async () => {

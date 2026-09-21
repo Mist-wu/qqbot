@@ -6,7 +6,8 @@ import { test } from "node:test";
 
 process.env.LOG_LEVEL = "silent";
 
-const { StickerStore, sniffMime, cleanDescription } = await import("../src/chat/stickers.js");
+const { StickerStore } = await import("../src/chat/stickers.js");
+const { sniffMime, cleanDescription } = await import("../src/chat/media.js");
 
 const GIF = Buffer.from("GIF89a\x01\x00\x01\x00\x00\x00\x00;", "binary");
 let downloads = 0;
@@ -115,4 +116,16 @@ test("stored descriptions are cleaned on load", async () => {
   await reloaded.load();
   assert.equal(instance.list()[0]!.description, "开心");
   assert.equal(reloaded.list()[0]!.description, "一脸不爽");
+});
+
+test("sticker list is ranked by what people post, not by the bot's own use, and shuffled", async () => {
+  const { instance } = await store(300);
+  for (const file of ["a.gif", "b.gif", "c.gif"]) await instance.observe(image(file));
+  await instance.observe(image("b.gif"));
+  await instance.observe(image("c.gif"));
+  const a = instance.list().find((sticker) => sticker.key === "image:a.gif")!;
+  for (let i = 0; i < 10; i++) await instance.toSegment(a);
+  assert.deepEqual(instance.list(2).map((sticker) => sticker.key).sort(), ["image:b.gif", "image:c.gif"]);
+  const orders = new Set(Array.from({ length: 30 }, () => instance.list().map((sticker) => sticker.id).join(",")));
+  assert.ok(orders.size > 1);
 });

@@ -33,7 +33,7 @@ function idSet(name: string): Set<number> {
   return new Set(list(name).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0));
 }
 
-const DEFAULT_PERSONA = "是群里的一员。";
+const DEFAULT_PERSONA = "是群里的一个 AI 群友。";
 
 export const config = {
   logLevel: str("LOG_LEVEL", "info"),
@@ -75,6 +75,8 @@ export const config = {
     thinking: bool("DEEPSEEK_THINKING", false),
     timeoutMs: num("DEEPSEEK_TIMEOUT_MS", 60000),
     maxTokens: num("DEEPSEEK_MAX_TOKENS", 800),
+    // DeepSeek's recommended temperature for conversation; only used for replies.
+    temperature: num("DEEPSEEK_TEMPERATURE", 1.3),
     maxToolRounds: num("DEEPSEEK_MAX_TOOL_ROUNDS", 3),
   },
   search: {
@@ -91,6 +93,10 @@ export const config = {
     max: num("STICKERS_MAX", 300),
     promptLimit: num("STICKERS_PROMPT_LIMIT", 40),
   },
+  images: {
+    enabled: bool("IMAGES_ENABLED", true),
+    maxBytes: num("IMAGES_MAX_BYTES", 8 * 1024 * 1024),
+  },
   memory: {
     enabled: bool("MEMORY_ENABLED", true),
     file: str("MEMORY_FILE", "data/memory.json"),
@@ -104,9 +110,12 @@ export const config = {
     contextMessages: num("HISTORY_CONTEXT_MESSAGES", 20),
   },
   reply: {
+    // A reply longer than this is sent as one merged-forward message instead of a burst of lines.
+    forwardParts: num("REPLY_FORWARD_PARTS", 5),
+    forwardChars: num("REPLY_FORWARD_CHARS", 300),
     // Safety caps against runaway output only; the prompt leaves length to the model.
     maxChars: num("REPLY_MAX_CHARS", 1500),
-    maxParts: num("REPLY_MAX_PARTS", 8),
+    maxParts: num("REPLY_MAX_PARTS", 40),
   },
 };
 

@@ -15,8 +15,9 @@ import type { MessageEvent, Segment } from "../napcat/types.js";
 import type { CodexWebSearch } from "../search/web-search.js";
 import { decide, type GateDecision, type Judge } from "./gate.js";
 import { SessionHistory, type ChatRecord, type Scope } from "./history.js";
+import type { ImageDescriber } from "./images.js";
 import type { MemoryStore } from "./memory.js";
-import { generateReply, type ReplyPart } from "./reply.js";
+import { generateReply, planSends, type ReplyPart } from "./reply.js";
 import type { StickerStore } from "./stickers.js";
 
 type Session = {
@@ -34,14 +35,15 @@ type Session = {
 };
 
 export type RuntimeDeps = {
-  client: Pick<NapcatClient, "selfId" | "sendMessage" | "callAction">;
+  client: Pick<NapcatClient, "selfId" | "sendMessage" | "sendForward" | "callAction">;
   judge: Judge | undefined;
   search: CodexWebSearch | undefined;
   stickers: StickerStore | undefined;
+  images?: ImageDescriber | undefined;
   memory: MemoryStore | undefined;
 };
 
-const STICKER_WAIT_MS = 6000;
+const MEDIA_WAIT_MS = 8000;
 
 export class ChatRuntime {
   private readonly sessions = new Map<string, Session>();
@@ -85,15 +87,14 @@ export class ChatRuntime {
       mentions,
     };
 
-    const stickers = this.deps.stickers;
-    const stickerSegments = stickers ? segments.filter(isSticker) : [];
+    const media = segments.filter((seg) => seg.type === "image" || seg.type === "mface");
     const unknownNames = groupId === undefined ? [] : mentions.filter((userId) => atName(userId) === undefined);
-    if (stickerSegments.length > 0 || unknownNames.length > 0) {
+    if (media.length > 0 || unknownNames.length > 0) {
       record.ready = Promise.all([
-        stickers ? describeStickers(stickers, stickerSegments) : new Map<Segment, string>(),
+        this.describeMedia(media),
         ...unknownNames.map((userId) => this.lookupMember(groupId!, userId)),
       ]).then(([descriptions]) => {
-        record.text = renderSegments(segments, { ...renderContext, stickerText: (seg) => descriptions.get(seg) });
+        record.text = renderSegments(segments, { ...renderContext, imageText: (seg) => descriptions.get(seg) });
       });
     }
     session.history.add(record);
@@ -170,7 +171,7 @@ export class ChatRuntime {
     const pending = session.pending.splice(0);
     session.firstPendingAt = undefined;
     try {
-      await Promise.race([Promise.all(pending.map((record) => record.ready)), sleep(STICKER_WAIT_MS)]);
+      await Promise.race([Promise.all(pending.map((record) => record.ready)), sleep(MEDIA_WAIT_MS)]);
       const now = Date.now();
       const pendingSet = new Set(pending);
       const records = session.history.recent(config.history.contextMessages + pending.length);
@@ -230,24 +231,17 @@ export class ChatRuntime {
     const quote =
       session.scope === "group" && target.messageId !== undefined && session.history.last() !== target;
 
-    for (const [index, part] of parts.entries()) {
-      if (index > 0) await sleep(typingDelay(part));
-      const sent = await this.toSegments(part);
+    const members = this.members(session);
+    for (const [index, item] of planSends(parts).entries()) {
+      if (index > 0) await sleep(item.kind === "forward" ? 1500 : typingDelay(item.part));
+      if (item.kind === "forward") {
+        await this.sendForward(session, item.text, members);
+        continue;
+      }
+      const sent = await this.toSegments(item.part, members);
       if (!sent) continue;
       const segments = index === 0 && quote ? [replySegment(target.messageId!), ...sent.segments] : sent.segments;
-      const messageId = await this.deps.client.sendMessage(session.target, segments);
-      session.history.add({
-        messageId,
-        userId: this.deps.client.selfId ?? 0,
-        name: config.bot.name,
-        text: sent.text,
-        time: Date.now(),
-        fromBot: true,
-        atBot: false,
-        replyToBot: false,
-        mentionsBot: false,
-      });
-      logger.info(`[send] ${session.key} ${sent.text}`);
+      this.recordSent(session, await this.deps.client.sendMessage(session.target, segments), sent.text);
     }
     this.scheduleLearn(session, config.memory.learnDelayMs);
   }
@@ -270,8 +264,70 @@ export class ChatRuntime {
     }
   }
 
-  private async toSegments(part: ReplyPart): Promise<{ segments: Segment[]; text: string } | undefined> {
-    if (part.kind === "text") return { segments: textToSegments(part.text), text: part.text };
+  // A failed forward falls back to plain lines so the reply still arrives.
+  private async sendForward(session: Session, text: string, members: Map<string, number>): Promise<void> {
+    const node: Segment = {
+      type: "node",
+      data: {
+        user_id: String(this.deps.client.selfId ?? 0),
+        nickname: config.bot.name,
+        content: textToSegments(text, members),
+      },
+    };
+    try {
+      this.recordSent(session, await this.deps.client.sendForward(session.target, [node]), `[合并转发]\n${text}`);
+    } catch (error) {
+      logger.warn(`[send] ${session.key} 合并转发失败，改为逐条发送:`, (error as Error).message);
+      for (const line of text.split("\n").filter(Boolean)) {
+        await sleep(typingDelay({ kind: "text", text: line }));
+        this.recordSent(session, await this.deps.client.sendMessage(session.target, textToSegments(line, members)), line);
+      }
+    }
+  }
+
+  private recordSent(session: Session, messageId: number | undefined, text: string): void {
+    session.history.add({
+      messageId,
+      userId: this.deps.client.selfId ?? 0,
+      name: config.bot.name,
+      text,
+      time: Date.now(),
+      fromBot: true,
+      atBot: false,
+      replyToBot: false,
+      mentionsBot: false,
+    });
+    logger.info(`[send] ${session.key} ${text}`);
+  }
+
+  // Display name -> QQ number for members of this group, so "@名字" in a reply becomes a real mention.
+  private members(session: Session): Map<string, number> {
+    const members = new Map<string, number>();
+    if (session.target.groupId === undefined) return members;
+    const prefix = `${session.target.groupId}:`;
+    for (const [key, name] of this.memberNames) {
+      if (key.startsWith(prefix)) members.set(name, Number(key.slice(prefix.length)));
+    }
+    return members;
+  }
+
+  private async describeMedia(segments: Segment[]): Promise<Map<Segment, string>> {
+    const descriptions = new Map<Segment, string>();
+    await Promise.all(
+      segments.map(async (segment) => {
+        const source = isSticker(segment) ? this.deps.stickers : this.deps.images;
+        const description = await source?.observe(segment).catch(() => undefined);
+        if (description) descriptions.set(segment, description);
+      }),
+    );
+    return descriptions;
+  }
+
+  private async toSegments(
+    part: ReplyPart,
+    members: Map<string, number>,
+  ): Promise<{ segments: Segment[]; text: string } | undefined> {
+    if (part.kind === "text") return { segments: textToSegments(part.text, members), text: part.text };
     const sticker = this.deps.stickers?.byId(part.id);
     if (!sticker) {
       logger.warn(`[send] 表情包 #${part.id} 不存在，跳过`);
@@ -279,17 +335,6 @@ export class ChatRuntime {
     }
     return { segments: [await this.deps.stickers!.toSegment(sticker)], text: `[表情包：${sticker.description}]` };
   }
-}
-
-async function describeStickers(store: StickerStore, segments: Segment[]): Promise<Map<Segment, string>> {
-  const descriptions = new Map<Segment, string>();
-  await Promise.all(
-    segments.map(async (segment) => {
-      const description = await store.observe(segment).catch(() => undefined);
-      if (description) descriptions.set(segment, description);
-    }),
-  );
-  return descriptions;
 }
 
 // Roughly how long a person takes to type the next message.

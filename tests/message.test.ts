@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   atTargets,
+  markdownToText,
   hasText,
   isAtSelf,
   renderSegments,
@@ -74,4 +75,41 @@ test("@ of other users shows a name, never the raw QQ number", () => {
   const atName = (id: number) => (id === 123456789 ? "路人甲" : undefined);
   assert.equal(renderSegments(segments, { ...ctx, atName }), "@小猫 你还记得@路人甲 吗@某人");
   assert.deepEqual(atTargets(segments, 100), [123456789, 555]);
+});
+
+test("markdown messages render once, without LaTeX styling", () => {
+  const latex = "$\\scalebox{5.0}{\\colorbox{black}{\\textcolor{white}{\\text{\\scalebox{6.0}{\\colorbox{black}{\\textcolor{white}{\\text{666}}}}}}}}$";
+  const segments = toSegments([
+    { type: "markdown", data: { content: latex } },
+    { type: "text", data: { text: latex } },
+  ]);
+  assert.equal(renderSegments(segments, ctx), "666");
+  assert.equal(markdownToText("$\\textcolor{#FC5C7D}{就}\\textcolor{#DF6496}{只}$"), "就只");
+  assert.equal(markdownToText("$\\Huge 何\\Huge 意\\Huge 味$"), "何意味");
+  assert.equal(markdownToText("$\\colorbox{#FF0000}{\\color{white}{红底白字}}$"), "红底白字");
+  assert.equal(markdownToText("# 一级标题\n**正文**"), "一级标题\n正文");
+});
+
+test("pictures show their description when known", () => {
+  const segments = toSegments([
+    { type: "image", data: { sub_type: 0, file: "p" } },
+    { type: "image", data: { sub_type: 1, file: "s" } },
+  ]);
+  const imageText = (seg: { data: Record<string, unknown> }) => (seg.data.file === "p" ? "一张截图" : "猫猫叹气");
+  assert.equal(renderSegments(segments, { ...ctx, imageText }), "[图片：一张截图][表情包：猫猫叹气]");
+});
+
+test("@名字 of known members becomes a real mention; names may contain spaces", () => {
+  const members = new Map([["李四", 42], ["🌟- PP( ˘ 🐽˘)❤", 77], ["李", 1]]);
+  assert.deepEqual(textToSegments("@李四 处理什么[doge]", members), [
+    { type: "at", data: { qq: "42" } },
+    { type: "text", data: { text: " " } },
+    { type: "text", data: { text: "处理什么" } },
+    { type: "face", data: { id: "179" } },
+  ]);
+  assert.deepEqual(textToSegments("问问@🌟- PP( ˘ 🐽˘)❤", members), [
+    { type: "text", data: { text: "问问" } },
+    { type: "at", data: { qq: "77" } },
+  ]);
+  assert.deepEqual(textToSegments("邮箱a@b.com @路人", members), [{ type: "text", data: { text: "邮箱a@b.com @路人" } }]);
 });

@@ -34,11 +34,12 @@ type CompletionResponse = {
   usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_cache_hit_tokens?: number };
 };
 
+type CompleteOptions = { maxTokens?: number; json?: boolean; temperature?: number };
+
 async function complete(
   messages: ChatMessage[],
   tools: ToolDefinition[],
-  maxTokens = config.deepseek.maxTokens,
-  json = false,
+  { maxTokens = config.deepseek.maxTokens, json = false, temperature }: CompleteOptions = {},
 ): Promise<CompletionResponse> {
   const body: Record<string, unknown> = {
     model: DEEPSEEK_MODEL,
@@ -49,6 +50,7 @@ async function complete(
   };
   if (tools.length > 0) body.tools = tools;
   if (json) body.response_format = { type: "json_object" };
+  if (temperature !== undefined) body.temperature = temperature;
 
   const response = await fetch(`${config.deepseek.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
     method: "POST",
@@ -74,7 +76,7 @@ export async function chatWithTools(initial: ChatMessage[], tools: Tool[]): Prom
 
   for (let round = 0; ; round++) {
     const offerTools = round < config.deepseek.maxToolRounds ? tools.map((tool) => tool.definition) : [];
-    const result = await complete(messages, offerTools);
+    const result = await complete(messages, offerTools, { temperature: config.deepseek.temperature });
     const message = result.choices?.[0]?.message;
     if (!message) throw new Error("DeepSeek 返回为空");
     logger.debug(
@@ -93,18 +95,22 @@ export async function chatWithTools(initial: ChatMessage[], tools: Tool[]): Prom
   }
 }
 
-// JSON mode; the prompt itself must mention JSON.
+// JSON mode; the prompt itself must mention JSON. JSON mode occasionally emits malformed output,
+// so one retry is made.
 export async function completeJson(system: string, user: string, maxTokens = 2000): Promise<unknown> {
-  const result = await complete(
-    [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
-    [],
-    maxTokens,
-    true,
-  );
-  return JSON.parse(result.choices?.[0]?.message?.content ?? "");
+  const messages: ChatMessage[] = [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ];
+  for (let attempt = 0; ; attempt++) {
+    const result = await complete(messages, [], { maxTokens, json: true });
+    try {
+      return JSON.parse(result.choices?.[0]?.message?.content ?? "");
+    } catch (error) {
+      if (attempt >= 1) throw error;
+      logger.debug("[deepseek] JSON 解析失败，重试");
+    }
+  }
 }
 
 // deepseek-flash accepts images in user messages only.
@@ -120,7 +126,7 @@ export async function describeImage(dataUrl: string, instruction: string): Promi
       },
     ],
     [],
-    200,
+    { maxTokens: 300 },
   );
   return result.choices?.[0]?.message?.content?.trim() ?? "";
 }

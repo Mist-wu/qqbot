@@ -3,8 +3,10 @@ import { test } from "node:test";
 
 process.env.REPLY_MAX_PARTS = "3";
 process.env.REPLY_MAX_CHARS = "20";
+process.env.REPLY_FORWARD_PARTS = "2";
+process.env.REPLY_FORWARD_CHARS = "30";
 
-const { postProcess, buildTranscript, buildSystemPrompt, SKIP_MARKER } = await import("../src/chat/reply.js");
+const { postProcess, buildTranscript, buildSystemPrompt, planSends, SKIP_MARKER } = await import("../src/chat/reply.js");
 
 const text = (value: string) => ({ kind: "text", text: value });
 const { cleanSearchOutput } = await import("../src/search/web-search.js");
@@ -74,4 +76,20 @@ test("transcript stars pending messages and labels the bot", () => {
   });
   assert.match(transcript, /\[19:05\] 小猫（你）：在的/);
   assert.match(transcript, /★\[19:05\] 张三（@你）：你好/);
+});
+
+test("short replies go line by line; long ones become one merged forward", () => {
+  const t = (value: string) => ({ kind: "text" as const, text: value });
+  const sticker = { kind: "sticker" as const, id: 3 };
+  assert.deepEqual(planSends([t("在的"), sticker]), [
+    { kind: "part", part: t("在的") },
+    { kind: "part", part: sticker },
+  ]);
+  assert.deepEqual(planSends([t("展开讲讲👇"), t("第一点"), t("第二点"), sticker]), [
+    { kind: "part", part: t("展开讲讲👇") },
+    { kind: "forward", text: "第一点\n第二点" },
+    { kind: "part", part: sticker },
+  ]);
+  const long = "很长".repeat(20);
+  assert.deepEqual(planSends([t(long), t("尾巴")]), [{ kind: "forward", text: `${long}\n尾巴` }]);
 });
