@@ -1,0 +1,19 @@
+[Unit]
+Description=qqbot: jev decides, deepseek-flash replies
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=azureuser
+WorkingDirectory=/home/azureuser/qqbot
+ExecStart=/home/azureuser/.nvm/versions/node/v22.23.2/bin/node dist/index.js
+Restart=always
+RestartSec=5
+MemoryMax=300M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qqbot
+
+[Install]
+WantedBy=multi-user.target
