@@ -1,3 +1,5 @@
+# Adjust User, WorkingDirectory and the node path to your install, then:
+#   sudo install -m 644 deploy/qqbot.service /etc/systemd/system/ && sudo systemctl enable --now qqbot
 [Unit]
 Description=qqbot: jev decides, deepseek-flash replies
 After=network-online.target docker.service

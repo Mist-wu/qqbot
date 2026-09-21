@@ -2,6 +2,12 @@
   "name": "qqbot",
   "private": true,
   "version": "0.1.0",
+  "description": "QQ chat bot on NapCat: jev decides when to speak, deepseek-flash decides what to say",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Mist-wu/qqbot.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
