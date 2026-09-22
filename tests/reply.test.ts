@@ -77,7 +77,7 @@ test("transcript stars pending messages and labels the bot", () => {
     now: Date.now(),
   });
   assert.match(transcript, /\[19:05\] 小猫（你）：在的/);
-  assert.match(transcript, /★\[19:05\] 张三（@你）：你好/);
+  assert.match(transcript, /★\[19:05\] 张三 → 你：你好/);
 });
 
 test("short replies go line by line; long ones become one merged forward", () => {

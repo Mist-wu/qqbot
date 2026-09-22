@@ -1,5 +1,7 @@
 export type Scope = "group" | "private";
 
+export type Quote = { name: string; text: string; fromBot: boolean };
+
 export type ChatRecord = {
   messageId?: number;
   userId: number;
@@ -10,11 +12,35 @@ export type ChatRecord = {
   atBot: boolean;
   replyToBot: boolean;
   mentionsBot: boolean;
-  // Other users @-mentioned in this message.
+  // Other users @-mentioned in this message, and their display names once resolved.
   mentions?: number[];
-  // Resolves once sticker descriptions and @ names have been filled into text.
+  mentionNames?: string[];
+  // The message this one replies to.
+  quote?: Quote;
+  // Resolves once sticker descriptions, @ names and the quote have been filled in.
   ready?: Promise<void>;
 };
+
+const QUOTE_MAX_CHARS = 60;
+
+// Who a message is aimed at, and what it quotes, so a reader can follow who is talking to whom.
+// `self` is how the bot is referred to (e.g. "你" in its own prompt).
+export function relation(record: ChatRecord, self: string): { to: string[]; quote?: string } {
+  const to = [...(record.atBot ? [self] : []), ...(record.mentionNames ?? [])];
+  const quoted = record.quote;
+  if (to.length === 0 && quoted) to.push(quoted.fromBot ? self : quoted.name);
+  if (!quoted) return { to };
+  const text = quoted.text.replace(/\s+/g, " ");
+  const short = text.length > QUOTE_MAX_CHARS ? `${text.slice(0, QUOTE_MAX_CHARS)}…` : text;
+  return { to, quote: `${quoted.fromBot ? self : quoted.name}的「${short}」` };
+}
+
+// "名字 → 对象：正文（引用 某人的「原文」）"
+export function formatLine(record: ChatRecord, speaker: string, self: string): string {
+  const { to, quote } = relation(record, self);
+  const arrow = to.length > 0 ? ` → ${to.join("、")}` : "";
+  return `${speaker}${arrow}：${record.text}${quote ? `（引用${quote}）` : ""}`;
+}
 
 export type Presence = {
   bot: number;

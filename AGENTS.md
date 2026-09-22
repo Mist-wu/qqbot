@@ -24,6 +24,7 @@
 - With tools attached, DeepSeek requires `reasoning_content` of earlier assistant turns to be sent back (400 otherwise).
 - The bot only holds a synced Codex access token (no refresh token) and never refreshes: refresh tokens rotate, and the local pi owns this one.
 - @/reply to the bot is a hint for jev (lower threshold), not a forced reply.
+- Transcripts state who talks to whom (`history.ts` `formatLine`/`relation`); keep jev state, reply prompt and memory prompt on the same format.
 - Prompts give facts, not rules or examples: no length/tone requirements, no sample phrases (models copy them).
 
 ## Workflow

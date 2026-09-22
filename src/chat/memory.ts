@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 
 import { config } from "../config.js";
 import { logger } from "../logger.js";
-import type { ChatRecord, Scope } from "./history.js";
+import { formatLine, type ChatRecord, type Scope } from "./history.js";
 
 // Facts are kept per scope so a reply can tell what was said in private.
 export type Person = {
@@ -16,7 +16,7 @@ export type Person = {
 
 export type ExtractJson = (system: string, user: string) => Promise<unknown>;
 
-const MAX_FACT_CHARS = 120;
+const MAX_FACT_CHARS = 60;
 
 function clock(time: number): string {
   return new Date(time).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit" });
@@ -79,11 +79,12 @@ export class MemoryStore {
     });
     const transcript = records.map((record) => {
       const who = record.fromBot ? `${botName}（你）` : `${record.name}（QQ ${record.userId}）`;
-      return `[${clock(record.time)}] ${who}：${record.text}`;
+      return `[${clock(record.time)}] ${formatLine(record, who, botName)}`;
     });
     const system = [
-      `你在整理「${botName}」对聊天对象的长期记忆：关于每个人自己的、以后聊天时用得上的信息。`,
-      "结合新的聊天记录更新已有记忆，被纠正或过时的内容要改掉，不重要的不用记。",
+      `你在整理「${botName}」对聊天对象的长期记忆。只记长期有效、以后聊天用得上的信息：这个人是谁、做什么、喜欢什么、和别人是什么关系、经历过的重要的事。`,
+      "某一次说了什么做了什么、聊天里的玩笑、一时的情绪都不用记。住址、学校、联系方式、证件这类隐私不记。",
+      "结合新的聊天记录更新已有记忆：合并重复的，改掉被纠正或过时的，去掉不再重要的，每条尽量简短。",
       '只输出 JSON，格式为 {"people":[{"user_id":数字,"facts":["…"]}]}。只列出记忆有变化的人，facts 是这个人更新后的完整记忆。',
     ].join("\n");
     const user = [

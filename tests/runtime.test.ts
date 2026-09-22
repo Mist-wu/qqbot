@@ -82,13 +82,13 @@ function setup(judge: Deps["judge"], replies: string[], memory?: Deps["memory"],
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test("@bot with a modest jev score gets a reply", async () => {
-  const { runtime, sent, prompts } = setup(async () => ({ should_reply: 0.4, addressed: 1 }), ["在的\n咋了"]);
+  const { runtime, sent, prompts } = setup(async () => ({ should_reply: 0.5, addressed: 1 }), ["在的\n咋了"]);
   runtime.handle(groupMessage("在吗", [{ type: "at", data: { qq: String(SELF) } }]));
   await wait(1200);
   assert.equal(sent.length, 2);
   assert.deepEqual(sent[0]!.target, { groupId: 500 });
   assert.deepEqual(sent[0]!.message, [{ type: "text", data: { text: "在的" } }]);
-  assert.match(prompts[0]!, /★\[\d\d:\d\d\] 张三（@你）：@小猫 在吗/);
+  assert.match(prompts[0]!, /★\[\d\d:\d\d\] 张三 → 你：@小猫 在吗/);
 });
 
 test("burst of messages is judged once and quoted when others kept talking", async () => {
@@ -304,19 +304,40 @@ test("@名字 in a reply becomes a real mention of a known member", async () => 
 });
 
 test("quoted messages are shown, from history or fetched via get_msg", async () => {
-  const seen: string[] = [];
-  const { runtime, actions } = setup(async (state) => {
-    seen.push((state as { new_messages: { text: string }[] }).new_messages.map((m) => m.text).join(" | "));
-    return { should_reply: 0.1, addressed: 0.1 };
-  }, []);
+  const seen: Record<string, unknown>[] = [];
+  const { runtime, actions, prompts } = setup(async (state) => {
+    seen.push((state as { new_messages: Record<string, unknown>[] }).new_messages[0]!);
+    return { should_reply: seen.length === 3 ? 0.9 : 0.1, addressed: 0.1 };
+  }, ["嗯"]);
   const first = groupMessage("今晚吃火锅");
   runtime.handle(first);
   await wait(100);
   runtime.handle(groupMessage("同意", [{ type: "reply", data: { id: String(first.message_id) } }], 500, 8));
   await wait(100);
   runtime.handle(groupMessage("这些都是干什么的", [{ type: "reply", data: { id: "999999" } }]));
-  await wait(100);
-  assert.equal(seen[1], "[回复 张三：今晚吃火锅] 同意");
-  assert.equal(seen[2], "[回复 王五：GitHub Trending 今日榜单] 这些都是干什么的");
+  await wait(200);
+  assert.equal(seen[1]!.text, "同意");
+  assert.deepEqual(seen[1]!.to, ["张三"]);
+  assert.equal(seen[1]!.quoting, "张三的「今晚吃火锅」");
+  assert.equal(seen[2]!.quoting, "王五的「GitHub Trending 今日榜单」");
+  assert.match(prompts.at(-1)!, /张三 → 王五：这些都是干什么的（引用王五的「GitHub Trending 今日榜单」）/);
   assert.equal(actions.filter((action) => action === "get_msg").length, 1);
+});
+
+test("replying to the bot while @-ing someone else is addressed to that person", async () => {
+  const seen: Record<string, unknown>[] = [];
+  const { runtime } = setup(async (state) => {
+    seen.push((state as { new_messages: Record<string, unknown>[] }).new_messages[0]!);
+    return { should_reply: 0.9, addressed: 0.9 };
+  }, ["嗯嗯"]);
+  runtime.handle(groupMessage("在吗", [{ type: "at", data: { qq: String(SELF) } }], 500, 9));
+  await wait(200);
+  const botMessageId = nextId - 1;
+  runtime.handle(
+    groupMessage("没绷住", [{ type: "reply", data: { id: String(botMessageId) } }, { type: "at", data: { qq: "9" } }], 500, 7),
+  );
+  await wait(200);
+  assert.deepEqual(seen[1]!.to, ["张三"]);
+  assert.equal(seen[1]!.replies_to_bot, true);
+  assert.equal(seen[1]!.quoting, "小猫的「嗯嗯」");
 });

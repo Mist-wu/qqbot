@@ -49,6 +49,8 @@ export function markdownToText(content: string): string {
     text = text.replace(LATEX_TWO_ARG, "$1").replace(LATEX_ONE_ARG, "$1");
   }
   return text
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "[图片]")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\\[a-zA-Z]+\s?/g, "")
     .replace(/[${}]/g, "")
     .replace(/^#{1,6}\s+/gm, "")

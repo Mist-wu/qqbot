@@ -55,7 +55,8 @@ export const config = {
   gate: {
     groupThreshold: num("GATE_GROUP_THRESHOLD", 0.6),
     privateThreshold: num("GATE_PRIVATE_THRESHOLD", 0.35),
-    directThreshold: num("GATE_DIRECT_THRESHOLD", 0.3),
+    // Being @-ed or replied to lowers the bar, but scores below this were not really for the bot.
+    directThreshold: num("GATE_DIRECT_THRESHOLD", 0.45),
     groupDebounceMs: num("GATE_GROUP_DEBOUNCE_MS", 3000),
     privateDebounceMs: num("GATE_PRIVATE_DEBOUNCE_MS", 1500),
     directDebounceMs: num("GATE_DIRECT_DEBOUNCE_MS", 800),
@@ -108,8 +109,9 @@ export const config = {
     maxFacts: num("MEMORY_MAX_FACTS", 20),
   },
   history: {
-    maxMessages: num("HISTORY_MAX_MESSAGES", 60),
-    contextMessages: num("HISTORY_CONTEXT_MESSAGES", 20),
+    maxMessages: num("HISTORY_MAX_MESSAGES", 80),
+    // The bot's own multi-line replies take several records, so keep enough to follow a thread.
+    contextMessages: num("HISTORY_CONTEXT_MESSAGES", 40),
   },
   reply: {
     // A reply longer than this is sent as one merged-forward message instead of a burst of lines.

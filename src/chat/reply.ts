@@ -2,7 +2,7 @@ import { config } from "../config.js";
 import { FACE_IDS } from "../napcat/faces.js";
 import { chatWithTools, type ChatMessage, type Tool } from "../llm/deepseek.js";
 import type { CodexWebSearch } from "../search/web-search.js";
-import type { ChatRecord, Scope } from "./history.js";
+import { formatLine, type ChatRecord, type Scope } from "./history.js";
 
 export const SKIP_MARKER = "[不回复]";
 
@@ -54,12 +54,11 @@ export function buildSystemPrompt(ctx: ReplyContext, withSearch: boolean): strin
 
 export function buildTranscript(ctx: ReplyContext): string {
   const title = ctx.scope === "group" ? "群聊最近的聊天记录" : "私聊最近的聊天记录";
-  const lines = [`${title}（越往下越新，★ 是需要你回应的新消息）：`];
+  const lines = [`${title}（越往下越新，★ 是需要你回应的新消息，“→”后面是这条消息在对谁说）：`];
   for (const record of ctx.records) {
-    const who = record.fromBot ? `${ctx.botName}（你）` : record.name;
-    const tags = [record.atBot ? "@你" : "", record.replyToBot ? "回复你" : ""].filter(Boolean).join("，");
+    const speaker = record.fromBot ? `${ctx.botName}（你）` : record.name;
     const mark = ctx.pending.has(record) ? "★" : "";
-    lines.push(`${mark}[${clock(record.time)}] ${who}${tags ? `（${tags}）` : ""}：${record.text}`);
+    lines.push(`${mark}[${clock(record.time)}] ${formatLine(record, speaker, "你")}`);
   }
   lines.push("", `以「${ctx.botName}」的身份回应。`);
   return lines.join("\n");

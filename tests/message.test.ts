@@ -113,3 +113,8 @@ test("@名字 of known members becomes a real mention; names may contain spaces"
   ]);
   assert.deepEqual(textToSegments("邮箱a@b.com @路人", members), [{ type: "text", data: { text: "邮箱a@b.com @路人" } }]);
 });
+
+test("markdown links and images render as plain text", () => {
+  assert.equal(markdownToText("[@OvO](mqqapi://markdown/mention?at_type=1&at_tiny_id=1) 你好"), "@OvO 你好");
+  assert.equal(markdownToText("看 ![star #20px](https://x/s.png) 和 [完整榜单](https://github.com/trending)"), "看 [图片] 和 完整榜单");
+});

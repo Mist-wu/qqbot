@@ -14,7 +14,7 @@ import {
 import type { MessageEvent, Segment } from "../napcat/types.js";
 import type { CodexWebSearch } from "../search/web-search.js";
 import { decide, type GateDecision, type Judge } from "./gate.js";
-import { SessionHistory, type ChatRecord, type Scope } from "./history.js";
+import { SessionHistory, formatLine, type ChatRecord, type Quote, type Scope } from "./history.js";
 import type { ImageDescriber } from "./images.js";
 import type { MemoryStore } from "./memory.js";
 import { dropRepeatedEndings, generateReply, planSends, type ReplyPart } from "./reply.js";
@@ -44,15 +44,7 @@ export type RuntimeDeps = {
 };
 
 const MEDIA_WAIT_MS = 8000;
-const QUOTE_MAX_CHARS = 120;
 
-type Quote = { name: string; text: string };
-
-function quotePrefix(quote: Quote | undefined): string {
-  if (!quote) return "";
-  const text = quote.text.replace(/\s+/g, " ");
-  return `[回复 ${quote.name}：${text.length > QUOTE_MAX_CHARS ? `${text.slice(0, QUOTE_MAX_CHARS)}…` : text}] `;
-}
 
 export class ChatRuntime {
   private readonly sessions = new Map<string, Session>();
@@ -98,12 +90,11 @@ export class ChatRuntime {
 
     // A quoted message is found in history when possible, otherwise fetched from NapCat.
     const known = replyTo !== undefined ? session.history.byId(replyTo) : undefined;
-    let quote: Quote | undefined = known ? { name: known.name, text: known.text } : undefined;
-    const media = segments.filter((seg) => seg.type === "image" || seg.type === "mface");
-    const render = (descriptions?: Map<Segment, string>) =>
-      quotePrefix(quote) + renderSegments(segments, { ...renderContext, imageText: (seg) => descriptions?.get(seg) });
-    record.text = render();
+    if (known) record.quote = { name: known.name, text: known.text, fromBot: known.fromBot };
+    const nameMentions = () => mentions.map((userId) => atName(userId) ?? "某人");
+    record.mentionNames = nameMentions();
 
+    const media = segments.filter((seg) => seg.type === "image" || seg.type === "mface");
     const unknownNames = groupId === undefined ? [] : mentions.filter((userId) => atName(userId) === undefined);
     const fetchQuote = replyTo !== undefined && !known;
     if (media.length > 0 || unknownNames.length > 0 || fetchQuote) {
@@ -111,12 +102,13 @@ export class ChatRuntime {
         this.describeMedia(media),
         fetchQuote
           ? this.fetchQuote(replyTo!, selfId, atName).then((found) => {
-              quote = found;
+              record.quote = found;
             })
           : undefined,
         ...unknownNames.map((userId) => this.lookupMember(groupId!, userId)),
       ]).then(([descriptions]) => {
-        record.text = render(descriptions);
+        record.text = renderSegments(segments, { ...renderContext, imageText: (seg) => descriptions.get(seg) });
+        record.mentionNames = nameMentions();
       });
     }
     session.history.add(record);
@@ -172,8 +164,9 @@ export class ChatRuntime {
         imageText: (seg) => descriptions.get(seg),
       });
       if (!text) return undefined;
-      const name = data?.user_id === selfId ? config.bot.name : data?.sender?.card || data?.sender?.nickname || "某人";
-      return { name, text };
+      const fromBot = data?.user_id === selfId;
+      const name = fromBot ? config.bot.name : data?.sender?.card || data?.sender?.nickname || "某人";
+      return { name, text, fromBot };
     } catch (error) {
       logger.debug(`获取引用消息失败 ${messageId}:`, (error as Error).message);
       return undefined;
@@ -295,8 +288,10 @@ export class ChatRuntime {
       }
       const sent = await this.toSegments(item.part, members);
       if (!sent) continue;
-      const segments = index === 0 && quote ? [replySegment(target.messageId!), ...sent.segments] : sent.segments;
-      this.recordSent(session, await this.deps.client.sendMessage(session.target, segments), sent.text);
+      const quoted = index === 0 && quote;
+      const segments = quoted ? [replySegment(target.messageId!), ...sent.segments] : sent.segments;
+      const quoteOf = quoted ? { name: target.name, text: target.text, fromBot: false } : undefined;
+      this.recordSent(session, await this.deps.client.sendMessage(session.target, segments), sent.text, quoteOf);
     }
     this.scheduleLearn(session, config.memory.learnDelayMs);
   }
@@ -340,8 +335,9 @@ export class ChatRuntime {
     }
   }
 
-  private recordSent(session: Session, messageId: number | undefined, text: string): void {
+  private recordSent(session: Session, messageId: number | undefined, text: string, quote?: Quote): void {
     session.history.add({
+      quote,
       messageId,
       userId: this.deps.client.selfId ?? 0,
       name: config.bot.name,
@@ -406,7 +402,7 @@ function formatDecision(decision: GateDecision): string {
 }
 
 function summarize(records: ChatRecord[]): string {
-  return records.map((record) => `${record.name}: ${record.text}`.slice(0, 60)).join(" | ");
+  return records.map((record) => formatLine(record, record.name, config.bot.name).slice(0, 80)).join(" | ");
 }
 
 function sleep(ms: number): Promise<void> {

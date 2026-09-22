@@ -1,7 +1,7 @@
 import { TypeSafeClient, noul, type EntryType, type JsonValue, type Questions } from "@typesafe-ai/sdk";
 
 import { config } from "../config.js";
-import type { ChatRecord, Presence, Scope } from "./history.js";
+import { relation, type ChatRecord, type Presence, type Scope } from "./history.js";
 
 export type GateContext = {
   scope: Scope;
@@ -66,6 +66,9 @@ function describe(record: ChatRecord, ctx: GateContext): JsonValue {
     text: record.text,
     when: relativeTime(record.time, ctx.now),
   };
+  const { to, quote } = relation(record, ctx.botName);
+  if (to.length > 0) entry.to = to;
+  if (quote) entry.quoting = quote;
   if (record.atBot) entry.at_bot = true;
   if (record.replyToBot) entry.replies_to_bot = true;
   if (record.mentionsBot) entry.mentions_bot_name = true;

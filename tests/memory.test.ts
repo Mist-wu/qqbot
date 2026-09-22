@@ -91,3 +91,13 @@ test("people @-mentioned are described too", async () => {
   const asked = { ...record(42, "王五", "@OvO 你还记得@路人甲 吗"), mentions: [77] };
   assert.deepEqual(memory.describe([asked]), ["路人甲：是群主"]);
 });
+
+test("the extractor is asked for lasting facts and sees who talks to whom", async () => {
+  const prompts: string[] = [];
+  const { memory } = await store({ people: [] }, prompts);
+  const quoted = { ...record(42, "李四", "我也是"), quote: { name: "OvO", text: "我喜欢猫", fromBot: true } };
+  await memory.learn("group", "测试群", [record(1, "OvO", "我喜欢猫", true), quoted], "OvO");
+  assert.match(prompts[0]!, /长期有效/);
+  assert.match(prompts[0]!, /隐私/);
+  assert.match(prompts[0]!, /李四（QQ 42） → OvO：我也是（引用OvO的「我喜欢猫」）/);
+});
