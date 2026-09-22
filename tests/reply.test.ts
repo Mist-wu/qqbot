@@ -6,7 +6,9 @@ process.env.REPLY_MAX_CHARS = "20";
 process.env.REPLY_FORWARD_PARTS = "2";
 process.env.REPLY_FORWARD_CHARS = "30";
 
-const { postProcess, buildTranscript, buildSystemPrompt, planSends, SKIP_MARKER } = await import("../src/chat/reply.js");
+const { postProcess, buildTranscript, buildSystemPrompt, planSends, dropRepeatedEndings, SKIP_MARKER } = await import(
+  "../src/chat/reply.js"
+);
 
 const text = (value: string) => ({ kind: "text", text: value });
 const { cleanSearchOutput } = await import("../src/search/web-search.js");
@@ -92,4 +94,14 @@ test("short replies go line by line; long ones become one merged forward", () =>
   ]);
   const long = "很长".repeat(20);
   assert.deepEqual(planSends([t(long), t("尾巴")]), [{ kind: "forward", text: `${long}\n尾巴` }]);
+});
+
+test("an ending emoji or face used twice recently is dropped", () => {
+  const t = (value: string) => ({ kind: "text" as const, text: value });
+  const recent = ["查户口是吧😌", "在的", "熬夜是吧😌"];
+  assert.deepEqual(dropRepeatedEndings([t("谁问你了😌"), t("行吧[doge]")], recent), [t("谁问你了"), t("行吧[doge]")]);
+  assert.deepEqual(dropRepeatedEndings([t("好😌")], ["a😌"]), [t("好😌")]);
+  assert.deepEqual(dropRepeatedEndings([t("一😂"), t("二😂"), t("三😂")], []), [t("一😂"), t("二😂"), t("三")]);
+  assert.deepEqual(dropRepeatedEndings([t("😌")], ["a😌", "b😌"]), [t("😌")]);
+  assert.deepEqual(dropRepeatedEndings([t("看[图片]")], ["x[图片]", "y[图片]"]), [t("看[图片]")]);
 });

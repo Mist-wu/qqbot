@@ -57,6 +57,10 @@ export class SessionHistory {
     return count > 0 ? this.records.slice(-count) : [];
   }
 
+  byId(messageId: number): ChatRecord | undefined {
+    return this.records.findLast((record) => record.messageId === messageId);
+  }
+
   last(): ChatRecord | undefined {
     return this.records.at(-1);
   }

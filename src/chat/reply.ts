@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import { FACE_IDS } from "../napcat/faces.js";
 import { chatWithTools, type ChatMessage, type Tool } from "../llm/deepseek.js";
 import type { CodexWebSearch } from "../search/web-search.js";
 import type { ChatRecord, Scope } from "./history.js";
@@ -92,6 +93,30 @@ function pushText(parts: ReplyPart[], text: string): void {
   if (!trimmed) return;
   const capped = trimmed.length > config.reply.maxChars ? `${trimmed.slice(0, config.reply.maxChars)}…` : trimmed;
   parts.push({ kind: "text", text: capped });
+}
+
+const TRAILING_EMOJI = /(?:\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*|\[[^\[\]\s]{1,8}\])\s*$/u;
+
+function trailingEnding(text: string): string | undefined {
+  const token = TRAILING_EMOJI.exec(text)?.[0].trim();
+  if (!token) return undefined;
+  // Bracketed endings count only when they are real QQ faces, not e.g. "[图片]".
+  return token.startsWith("[") && FACE_IDS[token.slice(1, -1)] === undefined ? undefined : token;
+}
+
+// Models copy their own recent sign-offs; drop an ending emoji or face already used on two of the
+// bot's last few messages (earlier lines of this reply count too).
+export function dropRepeatedEndings(parts: ReplyPart[], recentBotTexts: string[]): ReplyPart[] {
+  const recent = recentBotTexts.slice(-5);
+  return parts.map((part) => {
+    if (part.kind !== "text") return part;
+    const ending = trailingEnding(part.text);
+    const repeats = ending ? recent.filter((text) => trailingEnding(text) === ending).length : 0;
+    const text = repeats >= 2 ? part.text.slice(0, part.text.lastIndexOf(ending!)).trimEnd() || part.text : part.text;
+    recent.push(part.text);
+    if (recent.length > 5) recent.shift();
+    return { kind: "text", text };
+  });
 }
 
 // Short replies go out line by line; a long one becomes a single merged-forward message, keeping a

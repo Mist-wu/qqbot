@@ -17,7 +17,7 @@ import { decide, type GateDecision, type Judge } from "./gate.js";
 import { SessionHistory, type ChatRecord, type Scope } from "./history.js";
 import type { ImageDescriber } from "./images.js";
 import type { MemoryStore } from "./memory.js";
-import { generateReply, planSends, type ReplyPart } from "./reply.js";
+import { dropRepeatedEndings, generateReply, planSends, type ReplyPart } from "./reply.js";
 import type { StickerStore } from "./stickers.js";
 
 type Session = {
@@ -44,6 +44,15 @@ export type RuntimeDeps = {
 };
 
 const MEDIA_WAIT_MS = 8000;
+const QUOTE_MAX_CHARS = 120;
+
+type Quote = { name: string; text: string };
+
+function quotePrefix(quote: Quote | undefined): string {
+  if (!quote) return "";
+  const text = quote.text.replace(/\s+/g, " ");
+  return `[回复 ${quote.name}：${text.length > QUOTE_MAX_CHARS ? `${text.slice(0, QUOTE_MAX_CHARS)}…` : text}] `;
+}
 
 export class ChatRuntime {
   private readonly sessions = new Map<string, Session>();
@@ -87,20 +96,36 @@ export class ChatRuntime {
       mentions,
     };
 
+    // A quoted message is found in history when possible, otherwise fetched from NapCat.
+    const known = replyTo !== undefined ? session.history.byId(replyTo) : undefined;
+    let quote: Quote | undefined = known ? { name: known.name, text: known.text } : undefined;
     const media = segments.filter((seg) => seg.type === "image" || seg.type === "mface");
+    const render = (descriptions?: Map<Segment, string>) =>
+      quotePrefix(quote) + renderSegments(segments, { ...renderContext, imageText: (seg) => descriptions?.get(seg) });
+    record.text = render();
+
     const unknownNames = groupId === undefined ? [] : mentions.filter((userId) => atName(userId) === undefined);
-    if (media.length > 0 || unknownNames.length > 0) {
+    const fetchQuote = replyTo !== undefined && !known;
+    if (media.length > 0 || unknownNames.length > 0 || fetchQuote) {
       record.ready = Promise.all([
         this.describeMedia(media),
+        fetchQuote
+          ? this.fetchQuote(replyTo!, selfId, atName).then((found) => {
+              quote = found;
+            })
+          : undefined,
         ...unknownNames.map((userId) => this.lookupMember(groupId!, userId)),
       ]).then(([descriptions]) => {
-        record.text = renderSegments(segments, { ...renderContext, imageText: (seg) => descriptions.get(seg) });
+        record.text = render(descriptions);
       });
     }
     session.history.add(record);
     session.pending.push(record);
     this.schedule(session);
-    if (session.history.total - session.learnedMark >= config.memory.learnBatch) this.scheduleLearn(session, 0);
+    // Batch learning only where the bot has been part of the conversation recently.
+    const lastBotAt = session.history.presence(config.memory.engagedWindowMs, Date.now()).lastBotAt;
+    const engaged = lastBotAt !== undefined && Date.now() - lastBotAt <= config.memory.engagedWindowMs;
+    if (engaged && session.history.total - session.learnedMark >= config.memory.learnBatch) this.scheduleLearn(session, 0);
   }
 
   private session(event: MessageEvent): Session {
@@ -125,6 +150,34 @@ export class ChatRuntime {
       if (scope === "group") void this.loadGroupName(session, event.group_id!);
     }
     return session;
+  }
+
+  private async fetchQuote(
+    messageId: number,
+    selfId: number,
+    atName: (userId: number) => string | undefined,
+  ): Promise<Quote | undefined> {
+    try {
+      const { data } = await this.deps.client.callAction<{
+        user_id?: number;
+        sender?: { card?: string; nickname?: string };
+        message?: Segment[] | string;
+      }>("get_msg", { message_id: messageId });
+      const segments = toSegments(data?.message);
+      const descriptions = await this.describeMedia(segments.filter((seg) => seg.type === "image" || seg.type === "mface"));
+      const text = renderSegments(segments, {
+        selfId,
+        botName: config.bot.name,
+        atName,
+        imageText: (seg) => descriptions.get(seg),
+      });
+      if (!text) return undefined;
+      const name = data?.user_id === selfId ? config.bot.name : data?.sender?.card || data?.sender?.nickname || "某人";
+      return { name, text };
+    } catch (error) {
+      logger.debug(`获取引用消息失败 ${messageId}:`, (error as Error).message);
+      return undefined;
+    }
   }
 
   private async lookupMember(groupId: number, userId: number): Promise<void> {
@@ -206,7 +259,7 @@ export class ChatRuntime {
     withSearch: boolean,
   ): Promise<void> {
     const search = withSearch && (await this.deps.search?.usable()) ? this.deps.search : undefined;
-    const parts = await generateReply(
+    const generated = await generateReply(
       {
         scope: session.scope,
         sessionLabel: session.label,
@@ -220,6 +273,8 @@ export class ChatRuntime {
       },
       search,
     );
+    const recentBot = records.filter((record) => record.fromBot).map((record) => record.text);
+    const parts = dropRepeatedEndings(generated, recentBot);
     if (parts.length === 0) {
       logger.info(`[chat] ${session.key} 模型选择不回复`);
       return;

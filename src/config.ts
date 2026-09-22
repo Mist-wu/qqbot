@@ -75,8 +75,8 @@ export const config = {
     thinking: bool("DEEPSEEK_THINKING", false),
     timeoutMs: num("DEEPSEEK_TIMEOUT_MS", 60000),
     maxTokens: num("DEEPSEEK_MAX_TOKENS", 800),
-    // DeepSeek's recommended temperature for conversation; only used for replies.
-    temperature: num("DEEPSEEK_TEMPERATURE", 1.3),
+    // Only used for replies; 1.3 produced stray foreign punctuation and words.
+    temperature: num("DEEPSEEK_TEMPERATURE", 1.1),
     maxToolRounds: num("DEEPSEEK_MAX_TOOL_ROUNDS", 3),
   },
   search: {
@@ -103,6 +103,8 @@ export const config = {
     // Learn this long after the bot replied, or right away once this many messages are unlearned.
     learnDelayMs: num("MEMORY_LEARN_DELAY_MS", 10000),
     learnBatch: num("MEMORY_LEARN_BATCH", 30),
+    // Batch learning (without a reply) only if the bot spoke in the session within this window.
+    engagedWindowMs: num("MEMORY_ENGAGED_WINDOW_MS", 30 * 60 * 1000),
     maxFacts: num("MEMORY_MAX_FACTS", 20),
   },
   history: {

@@ -51,7 +51,7 @@ test("runs tools and passes reasoning_content back", async () => {
   assert.deepEqual(log, ["答案"]);
   assert.equal(bodies[0]!.model, DEEPSEEK_MODEL);
   assert.equal(bodies[0]!.model, "deepseek-flash");
-  assert.equal(bodies[0]!.temperature, 1.3);
+  assert.equal(bodies[0]!.temperature, 1.1);
   const second = bodies[1]!.messages;
   assert.equal(second[1].role, "assistant");
   assert.equal(second[1].reasoning_content, "需要查一下");

@@ -63,6 +63,13 @@ function setup(judge: Deps["judge"], replies: string[], memory?: Deps["memory"],
     },
     callAction: async (action: string, params: { user_id?: number }) => {
       actions.push(action);
+      if (action === "get_msg") {
+        return {
+          status: "ok" as const,
+          retcode: 0,
+          data: { user_id: 8, sender: { card: "王五" }, message: [{ type: "text", data: { text: "GitHub Trending 今日榜单" } }] },
+        };
+      }
       if (action === "get_group_member_info") {
         return { status: "ok" as const, retcode: 0, data: params.user_id === 777 ? { card: "路人甲" } : {} };
       }
@@ -294,4 +301,22 @@ test("@名字 in a reply becomes a real mention of a known member", async () => 
     { type: "at", data: { qq: "7" } },
     { type: "text", data: { text: " " } },
   ]);
+});
+
+test("quoted messages are shown, from history or fetched via get_msg", async () => {
+  const seen: string[] = [];
+  const { runtime, actions } = setup(async (state) => {
+    seen.push((state as { new_messages: { text: string }[] }).new_messages.map((m) => m.text).join(" | "));
+    return { should_reply: 0.1, addressed: 0.1 };
+  }, []);
+  const first = groupMessage("今晚吃火锅");
+  runtime.handle(first);
+  await wait(100);
+  runtime.handle(groupMessage("同意", [{ type: "reply", data: { id: String(first.message_id) } }], 500, 8));
+  await wait(100);
+  runtime.handle(groupMessage("这些都是干什么的", [{ type: "reply", data: { id: "999999" } }]));
+  await wait(100);
+  assert.equal(seen[1], "[回复 张三：今晚吃火锅] 同意");
+  assert.equal(seen[2], "[回复 王五：GitHub Trending 今日榜单] 这些都是干什么的");
+  assert.equal(actions.filter((action) => action === "get_msg").length, 1);
 });
