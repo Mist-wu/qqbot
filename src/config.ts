@@ -51,6 +51,9 @@ export const config = {
     persona: str("BOT_PERSONA", DEFAULT_PERSONA),
     groups: idSet("BOT_GROUPS"),
     privateUsers: idSet("BOT_PRIVATE_USERS"),
+    // May send /启动 and /停止 in private chat.
+    adminUsers: idSet("BOT_ADMIN_USERS"),
+    stateFile: str("BOT_STATE_FILE", "data/state.json"),
   },
   gate: {
     groupThreshold: num("GATE_GROUP_THRESHOLD", 0.6),

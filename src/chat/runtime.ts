@@ -8,6 +8,7 @@ import {
   renderSegments,
   replySegment,
   replyTargetId,
+  textSegment,
   textToSegments,
   toSegments,
 } from "../napcat/message.js";
@@ -17,6 +18,7 @@ import { decide, type GateDecision, type Judge } from "./gate.js";
 import { SessionHistory, formatLine, type ChatRecord, type Quote, type Scope } from "./history.js";
 import type { ImageDescriber } from "./images.js";
 import type { MemoryStore } from "./memory.js";
+import type { PowerSwitch } from "./power.js";
 import { dropRepeatedEndings, generateReply, planSends, type ReplyPart } from "./reply.js";
 import type { StickerStore } from "./stickers.js";
 
@@ -41,7 +43,13 @@ export type RuntimeDeps = {
   stickers: StickerStore | undefined;
   images?: ImageDescriber | undefined;
   memory: MemoryStore | undefined;
+  power?: PowerSwitch | undefined;
 };
+
+const COMMANDS = new Map([
+  ["/启动", true],
+  ["/停止", false],
+]);
 
 const MEDIA_WAIT_MS = 8000;
 
@@ -56,6 +64,16 @@ export class ChatRuntime {
   handle(event: MessageEvent): void {
     const selfId = this.deps.client.selfId ?? event.self_id;
     if (event.user_id === selfId) return;
+    if (event.message_type === "private" && config.bot.adminUsers.has(event.user_id)) {
+      const command = renderSegments(toSegments(event.message), { botName: config.bot.name });
+      const on = COMMANDS.get(command);
+      if (on !== undefined) {
+        void this.command(event.user_id, on);
+        return;
+      }
+    }
+    // Stopped means not taking part at all: nothing is judged, stored or learned.
+    if (this.deps.power && !this.deps.power.on) return;
     const scope: Scope = event.message_type;
     if (scope === "group" && !config.bot.groups.has(event.group_id ?? 0)) return;
     if (scope === "private" && !config.bot.privateUsers.has(event.user_id)) return;
@@ -144,6 +162,37 @@ export class ChatRuntime {
     return session;
   }
 
+  private async command(userId: number, on: boolean): Promise<void> {
+    const power = this.deps.power;
+    let reply: string;
+    if (!power) {
+      reply = "没有配置开关（BOT_STATE_FILE）";
+    } else if (power.on === on) {
+      reply = on ? `${config.bot.name} 已经在运行` : `${config.bot.name} 已经是停止状态`;
+    } else {
+      await power.set(on);
+      if (!on) this.dropPending();
+      reply = on ? `${config.bot.name} 已启动` : `${config.bot.name} 已停止，群聊和私聊都不再回复，发 /启动 恢复`;
+    }
+    logger.info(`[admin] ${userId} ${on ? "/启动" : "/停止"} -> ${reply}`);
+    try {
+      await this.deps.client.sendMessage({ userId }, [textSegment(reply)]);
+    } catch (error) {
+      logger.warn("[admin] 回复失败:", (error as Error).message);
+    }
+  }
+
+  private dropPending(): void {
+    for (const session of this.sessions.values()) {
+      if (session.timer) clearTimeout(session.timer);
+      if (session.learnTimer) clearTimeout(session.learnTimer);
+      session.timer = undefined;
+      session.learnTimer = undefined;
+      session.pending = [];
+      session.firstPendingAt = undefined;
+    }
+  }
+
   private async fetchQuote(
     messageId: number,
     selfId: number,
@@ -213,6 +262,10 @@ export class ChatRuntime {
   private async process(session: Session): Promise<void> {
     session.timer = undefined;
     if (session.busy || session.pending.length === 0) return;
+    if (this.deps.power && !this.deps.power.on) {
+      session.pending = [];
+      return;
+    }
     session.busy = true;
     const pending = session.pending.splice(0);
     session.firstPendingAt = undefined;

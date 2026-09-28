@@ -3,6 +3,7 @@ import { createJevJudge } from "./chat/gate.js";
 import { ChatRuntime } from "./chat/runtime.js";
 import { ImageDescriber, describeImageWith } from "./chat/images.js";
 import { MemoryStore } from "./chat/memory.js";
+import { PowerSwitch } from "./chat/power.js";
 import { StickerStore, describeSticker } from "./chat/stickers.js";
 import { DEEPSEEK_MODEL, completeJson, describeImage } from "./llm/deepseek.js";
 import { logger } from "./logger.js";
@@ -41,17 +42,20 @@ async function main(): Promise<void> {
     await memory.load();
   }
 
+  const power = new PowerSwitch(config.bot.stateFile);
+  await power.load();
+
   const groups = [...config.bot.groups].join(",") || "（无）";
   const privateUsers = [...config.bot.privateUsers].join(",") || "（无）";
   logger.info(
-    `bot=${config.bot.name} model=${DEEPSEEK_MODEL} jev=${judge ? config.jev.model : "off"} search=${search ? "on" : "off"} stickers=${stickers ? stickers.size : "off"} memory=${memory ? memory.size : "off"} groups=${groups} private=${privateUsers}`,
+    `bot=${config.bot.name} model=${DEEPSEEK_MODEL} jev=${judge ? config.jev.model : "off"} search=${search ? "on" : "off"} stickers=${stickers ? stickers.size : "off"} memory=${memory ? memory.size : "off"} groups=${groups} private=${privateUsers} admins=${[...config.bot.adminUsers].join(",") || "（无）"} power=${power.on ? "on" : "off"}`,
   );
 
   let runtime: ChatRuntime | undefined;
   const client = new NapcatClient((event) => {
     if (isMessageEvent(event)) runtime?.handle(event);
   });
-  runtime = new ChatRuntime({ client, judge, search, stickers, images, memory });
+  runtime = new ChatRuntime({ client, judge, search, stickers, images, memory, power });
   client.connect();
 
   const shutdown = async () => {

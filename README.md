@@ -15,7 +15,7 @@
 
 ---
 
-## 特性
+## 亮点
 
 - **像群友一样判断时机**：新消息先攒一小批，交给 [jev](https://typesafe.ai)（TypeSafe AI 的决策模型）给出“该不该接话”的概率。被 @ 或被回复只是降低门槛，“哈哈哈”之类的收尾照样可以不回。
 - **只用 deepseek-flash 说话**：提示词只交代事实（QQ 不渲染 Markdown、每行是一条消息、可以选择不说），不规定长度语气，也不给示例句。
@@ -105,6 +105,8 @@ BOT_PRIVATE_USERS=允许私聊的QQ号,逗号分隔
 
 `BOT_GROUPS` 和 `BOT_PRIVATE_USERS` 是白名单，为空就不在群里 / 私聊里说话。
 
+`BOT_ADMIN_USERS` 里的 QQ 号可以在私聊里发 `/停止` 让 bot 暂停（不判断、不回复、不收藏表情包、不整理记忆），发 `/启动` 恢复；状态存在 `data/state.json`，重启后保持。进程本身不会退出，所以随时能再 `/启动`。
+
 ### 3. 运行
 
 ```bash
@@ -164,15 +166,9 @@ deploy/sync-codex-auth.sh user@your-server
 
 `data/` 里有群友的个人信息和表情包，不要提交或公开。
 
-## 开发
+## 项目结构
 
-```bash
-pnpm dev         # tsx watch
-pnpm test        # node:test，不读本地 .env
-pnpm typecheck
-```
-
-```
+```text
 src/
 ├── index.ts              启动、依赖组装
 ├── config.ts             环境变量
@@ -189,6 +185,14 @@ src/
 ├── llm/deepseek.ts       deepseek-flash：工具循环、识图、JSON（失败重试一次）
 ├── search/               Codex access token 读取、web_search
 └── cli/learn-history.ts  从历史记录补学记忆
+```
+
+## 开发
+
+```bash
+pnpm dev         # tsx watch
+pnpm test        # node:test，不读本地 .env
+pnpm typecheck
 ```
 
 ## 注意
