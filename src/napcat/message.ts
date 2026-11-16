@@ -4,8 +4,8 @@ import type { Segment } from "./types.js";
 export type RenderContext = {
   selfId?: number;
   botName: string;
-  // Description of a sticker or picture segment, when known.
-  imageText?: (segment: Segment) => string | undefined;
+  // Description of a sticker or picture, or transcript of a voice message, when known.
+  mediaText?: (segment: Segment) => string | undefined;
   // Display name of an @-mentioned user, when known.
   atName?: (userId: number) => string | undefined;
 };
@@ -13,7 +13,6 @@ export type RenderContext = {
 const PLACEHOLDERS: Record<string, string> = {
   dice: "[骰子]",
   rps: "[猜拳]",
-  record: "[语音]",
   video: "[视频]",
   file: "[文件]",
   forward: "[合并转发]",
@@ -90,9 +89,14 @@ export function renderSegments(segments: Segment[], ctx: RenderContext): string 
       case "image":
       case "mface": {
         const sticker = isSticker(seg);
-        const description = ctx.imageText?.(seg);
+        const description = ctx.mediaText?.(seg);
         const label = sticker ? "表情包" : "图片";
         parts.push(description ? `[${label}：${description}]` : `[${label}]`);
+        break;
+      }
+      case "record": {
+        const transcript = ctx.mediaText?.(seg);
+        parts.push(transcript ? `[语音：${transcript}]` : "[语音]");
         break;
       }
       case "face": {

@@ -24,7 +24,7 @@ export type GateScores = {
 
 export type GateDecision = {
   reply: boolean;
-  // Whether to offer web_search to the model; the model still decides whether to call it.
+  // Whether to offer web search to the model; the model still decides whether to call it.
   search: boolean;
   reason: string;
   source: "rule" | "jev" | "fallback";

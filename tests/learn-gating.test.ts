@@ -49,7 +49,7 @@ test("batch learning only happens where the bot recently took part", async () =>
     const text = (state as { new_messages: { text: string }[] }).new_messages[0]!.text;
     return { should_reply: text.includes("@小猫") ? 0.9 : 0 };
   };
-  const runtime = new ChatRuntime({ client, judge, search: undefined, stickers: undefined, memory });
+  const runtime = new ChatRuntime({ client, judge, stickers: undefined, memory });
 
   for (let i = 0; i < 4; i++) {
     runtime.handle(message(600, `闲聊${i}`));

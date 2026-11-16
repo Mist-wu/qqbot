@@ -53,7 +53,7 @@ test("admin /停止 and /启动 in private chat pause and resume the bot, across
   const file = join(await mkdtemp(join(tmpdir(), "qqbot-power-")), "state.json");
   const power = new PowerSwitch(file);
   await power.load();
-  const runtime = new ChatRuntime({ client, judge, search: undefined, stickers: undefined, memory: undefined, power });
+  const runtime = new ChatRuntime({ client, judge, stickers: undefined, memory: undefined, power });
 
   runtime.handle(message("private", 42, "/停止"));
   await wait(50);

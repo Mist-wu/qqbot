@@ -95,8 +95,14 @@ test("pictures show their description when known", () => {
     { type: "image", data: { sub_type: 0, file: "p" } },
     { type: "image", data: { sub_type: 1, file: "s" } },
   ]);
-  const imageText = (seg: { data: Record<string, unknown> }) => (seg.data.file === "p" ? "一张截图" : "猫猫叹气");
-  assert.equal(renderSegments(segments, { ...ctx, imageText }), "[图片：一张截图][表情包：猫猫叹气]");
+  const mediaText = (seg: { data: Record<string, unknown> }) => (seg.data.file === "p" ? "一张截图" : "猫猫叹气");
+  assert.equal(renderSegments(segments, { ...ctx, mediaText }), "[图片：一张截图][表情包：猫猫叹气]");
+});
+
+test("voice messages show their transcript when known", () => {
+  const segments = toSegments([{ type: "record", data: { file: "v.amr" } }]);
+  assert.equal(renderSegments(segments, ctx), "[语音]");
+  assert.equal(renderSegments(segments, { ...ctx, mediaText: () => "今晚开黑吗" }), "[语音：今晚开黑吗]");
 });
 
 test("@名字 of known members becomes a real mention; names may contain spaces", () => {

@@ -36,7 +36,7 @@ function groupMessage(text: string, extra: Record<string, unknown>[] = [], group
   };
 }
 
-function setup(judge: Deps["judge"], replies: string[], memory?: Deps["memory"], search?: Deps["search"]) {
+function setup(judge: Deps["judge"], replies: string[], memory?: Deps["memory"], extra: Partial<Deps> = {}) {
   const sent: { target: unknown; message: unknown[] }[] = [];
   const prompts: string[] = [];
   const systems: string[] = [];
@@ -73,10 +73,13 @@ function setup(judge: Deps["judge"], replies: string[], memory?: Deps["memory"],
       if (action === "get_group_member_info") {
         return { status: "ok" as const, retcode: 0, data: params.user_id === 777 ? { card: "路人甲" } : {} };
       }
+      if (action === "get_record") {
+        return { status: "ok" as const, retcode: 0, data: { base64: Buffer.from("RIFFwav").toString("base64") } };
+      }
       return { status: "ok" as const, retcode: 0, data: { group_name: "测试群" } };
     },
   } as unknown as Deps["client"];
-  return { runtime: new ChatRuntime({ client, judge, search, stickers: undefined, memory }), sent, prompts, systems, actions, tools, forwards };
+  return { runtime: new ChatRuntime({ client, judge, stickers: undefined, memory, ...extra }), sent, prompts, systems, actions, tools, forwards };
 }
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -237,27 +240,66 @@ test("@ names are looked up once and shown to jev and the model", async () => {
   assert.equal(actions.filter((action) => action === "get_group_member_info").length, 1);
 });
 
-test("web_search is offered when jev scores it above 0.1 and the token is usable", async () => {
-  let usable = true;
-  const scores = [0.31, 0.05, 0.9];
-  const search = { usable: async () => usable, search: async () => "" } as unknown as Deps["search"];
-  const { runtime, tools } = setup(
+test("web search is offered above a 0.1 needs_search score; links are opened when present", async () => {
+  const scores = [0.31, 0.05, 0.05];
+  const { runtime, tools, systems } = setup(
     async () => ({ should_reply: 0.9, addressed: 0.9, needs_search: scores.shift()! }),
     ["a", "b", "c"],
-    undefined,
-    search,
   );
   const at = { type: "at", data: { qq: String(SELF) } };
   runtime.handle(groupMessage("你自己去搜一下jev", [at]));
   await wait(200);
   runtime.handle(groupMessage("哈哈", [at]));
   await wait(200);
-  usable = false;
-  runtime.handle(groupMessage("今天比分多少", [at]));
+  runtime.handle(groupMessage("这说的啥 https://example.com/post/1", [at]));
   await wait(200);
-  assert.equal((tools[0] as { function: { name: string } }[])[0]!.function.name, "web_search");
+  assert.deepEqual(tools[0], [{ type: "deepseek_web_search" }]);
   assert.equal(tools[1], undefined);
-  assert.equal(tools[2], undefined);
+  assert.deepEqual(tools[2], [{ type: "deepseek_read_url" }]);
+  assert.match(systems[0]!, /联网搜索/);
+  assert.doesNotMatch(systems[1]!, /联网|链接/);
+});
+
+test("voice messages are transcribed before jev sees them", async () => {
+  const seen: string[] = [];
+  const audio: Buffer[] = [];
+  const { runtime, actions } = setup(async (state) => {
+    seen.push((state as { new_messages: { text: string }[] }).new_messages[0]!.text);
+    return { should_reply: 0.1, addressed: 0.1 };
+  }, []);
+  const { VoiceTranscriber } = await import("../src/chat/voices.js");
+  const deps = (runtime as unknown as { deps: Deps }).deps;
+  deps.voices = new VoiceTranscriber(deps.client, async (wav) => {
+    audio.push(wav);
+    return " 今晚 开黑吗 ";
+  });
+  const message = groupMessage("", [{ type: "record", data: { file: "v.amr" } }]);
+  message.message = message.message.slice(0, 1);
+  runtime.handle(message);
+  await wait(300);
+  assert.deepEqual(seen, ["[语音：今晚 开黑吗]"]);
+  assert.ok(actions.includes("get_record"));
+  assert.equal(audio[0]!.toString(), "RIFFwav");
+});
+
+test("voice lines are sent as records, or as text when synthesis fails", async () => {
+  let fail = false;
+  const speak = async (text: string) => {
+    if (fail) throw new Error("503");
+    return Buffer.from(`wav:${text}`);
+  };
+  const at = { type: "at", data: { qq: String(SELF) } };
+  const { runtime, sent, systems } = setup(async () => ({ should_reply: 0.9, addressed: 0.9 }), ["[语音]晚安", "[语音]早安"], undefined, {
+    speak,
+  });
+  runtime.handle(groupMessage("说句话", [at]));
+  await wait(200);
+  fail = true;
+  runtime.handle(groupMessage("再说一句", [at]));
+  await wait(200);
+  assert.match(systems[0]!, /\[语音\] 开头/);
+  assert.deepEqual(sent[0]!.message, [{ type: "record", data: { file: `base64://${Buffer.from("wav:晚安").toString("base64")}` } }]);
+  assert.deepEqual(sent[1]!.message, [{ type: "text", data: { text: "早安" } }]);
 });
 
 test("long replies are sent as one merged forward, with a plain fallback", async () => {

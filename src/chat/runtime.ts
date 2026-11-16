@@ -13,14 +13,14 @@ import {
   toSegments,
 } from "../napcat/message.js";
 import type { MessageEvent, Segment } from "../napcat/types.js";
-import type { CodexWebSearch } from "../search/web-search.js";
 import { decide, type GateDecision, type Judge } from "./gate.js";
 import { SessionHistory, formatLine, type ChatRecord, type Quote, type Scope } from "./history.js";
 import type { ImageDescriber } from "./images.js";
 import type { MemoryStore } from "./memory.js";
 import type { PowerSwitch } from "./power.js";
-import { dropRepeatedEndings, generateReply, planSends, type ReplyPart } from "./reply.js";
+import { dropRepeatedEndings, generateReply, hasLink, planSends, type ReplyPart } from "./reply.js";
 import type { StickerStore } from "./stickers.js";
+import type { VoiceTranscriber } from "./voices.js";
 
 type Session = {
   key: string;
@@ -39,9 +39,11 @@ type Session = {
 export type RuntimeDeps = {
   client: Pick<NapcatClient, "selfId" | "sendMessage" | "sendForward" | "callAction">;
   judge: Judge | undefined;
-  search: CodexWebSearch | undefined;
   stickers: StickerStore | undefined;
   images?: ImageDescriber | undefined;
+  voices?: VoiceTranscriber | undefined;
+  // Text to speech for voice lines in a reply; without it they go out as text.
+  speak?: ((text: string) => Promise<Buffer>) | undefined;
   memory: MemoryStore | undefined;
   power?: PowerSwitch | undefined;
 };
@@ -52,7 +54,7 @@ const COMMANDS = new Map([
 ]);
 
 const MEDIA_WAIT_MS = 8000;
-
+const MEDIA_TYPES = new Set(["image", "mface", "record"]);
 
 export class ChatRuntime {
   private readonly sessions = new Map<string, Session>();
@@ -112,7 +114,7 @@ export class ChatRuntime {
     const nameMentions = () => mentions.map((userId) => atName(userId) ?? "某人");
     record.mentionNames = nameMentions();
 
-    const media = segments.filter((seg) => seg.type === "image" || seg.type === "mface");
+    const media = segments.filter((seg) => MEDIA_TYPES.has(seg.type));
     const unknownNames = groupId === undefined ? [] : mentions.filter((userId) => atName(userId) === undefined);
     const fetchQuote = replyTo !== undefined && !known;
     if (media.length > 0 || unknownNames.length > 0 || fetchQuote) {
@@ -125,7 +127,7 @@ export class ChatRuntime {
           : undefined,
         ...unknownNames.map((userId) => this.lookupMember(groupId!, userId)),
       ]).then(([descriptions]) => {
-        record.text = renderSegments(segments, { ...renderContext, imageText: (seg) => descriptions.get(seg) });
+        record.text = renderSegments(segments, { ...renderContext, mediaText: (seg) => descriptions.get(seg) });
         record.mentionNames = nameMentions();
       });
     }
@@ -205,12 +207,12 @@ export class ChatRuntime {
         message?: Segment[] | string;
       }>("get_msg", { message_id: messageId });
       const segments = toSegments(data?.message);
-      const descriptions = await this.describeMedia(segments.filter((seg) => seg.type === "image" || seg.type === "mface"));
+      const descriptions = await this.describeMedia(segments.filter((seg) => MEDIA_TYPES.has(seg.type)));
       const text = renderSegments(segments, {
         selfId,
         botName: config.bot.name,
         atName,
-        imageText: (seg) => descriptions.get(seg),
+        mediaText: (seg) => descriptions.get(seg),
       });
       if (!text) return undefined;
       const fromBot = data?.user_id === selfId;
@@ -304,9 +306,7 @@ export class ChatRuntime {
     pending: Set<ChatRecord>,
     withSearch: boolean,
   ): Promise<void> {
-    const search = withSearch && (await this.deps.search?.usable()) ? this.deps.search : undefined;
-    const generated = await generateReply(
-      {
+    const generated = await generateReply({
         scope: session.scope,
         sessionLabel: session.label,
         botName: config.bot.name,
@@ -316,9 +316,10 @@ export class ChatRuntime {
         stickers: this.deps.stickers?.list() ?? [],
         memories: this.deps.memory?.describe(records) ?? [],
         now: Date.now(),
-      },
-      search,
-    );
+        search: withSearch && config.search.enabled,
+        readLinks: config.search.readLinks && hasLink(pending),
+        voice: this.deps.speak !== undefined,
+    });
     const recentBot = records.filter((record) => record.fromBot).map((record) => record.text);
     const parts = dropRepeatedEndings(generated, recentBot);
     if (parts.length === 0) {
@@ -419,7 +420,8 @@ export class ChatRuntime {
     const descriptions = new Map<Segment, string>();
     await Promise.all(
       segments.map(async (segment) => {
-        const source = isSticker(segment) ? this.deps.stickers : this.deps.images;
+        const source =
+          segment.type === "record" ? this.deps.voices : isSticker(segment) ? this.deps.stickers : this.deps.images;
         const description = await source?.observe(segment).catch(() => undefined);
         if (description) descriptions.set(segment, description);
       }),
@@ -427,11 +429,25 @@ export class ChatRuntime {
     return descriptions;
   }
 
+  // Voice lines become a record message; a failed synthesis sends the line as text instead.
+  private async voiceSegments(text: string, members: Map<string, number>): Promise<{ segments: Segment[]; text: string }> {
+    if (this.deps.speak) {
+      try {
+        const audio = await this.deps.speak(text);
+        return { segments: [{ type: "record", data: { file: `base64://${audio.toString("base64")}` } }], text: `[语音：${text}]` };
+      } catch (error) {
+        logger.warn("[send] 语音合成失败，改发文字:", (error as Error).message);
+      }
+    }
+    return { segments: textToSegments(text, members), text };
+  }
+
   private async toSegments(
     part: ReplyPart,
     members: Map<string, number>,
   ): Promise<{ segments: Segment[]; text: string } | undefined> {
     if (part.kind === "text") return { segments: textToSegments(part.text, members), text: part.text };
+    if (part.kind === "voice") return this.voiceSegments(part.text, members);
     const sticker = this.deps.stickers?.byId(part.id);
     if (!sticker) {
       logger.warn(`[send] 表情包 #${part.id} 不存在，跳过`);

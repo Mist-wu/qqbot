@@ -65,7 +65,7 @@ export const config = {
     directDebounceMs: num("GATE_DIRECT_DEBOUNCE_MS", 800),
     maxWaitMs: num("GATE_MAX_WAIT_MS", 10000),
     presenceWindowMs: num("GATE_PRESENCE_WINDOW_MS", 5 * 60 * 1000),
-    // Offer web_search when jev's needs_search score is above this.
+    // Offer web search when jev's needs_search score is above this.
     searchThreshold: num("GATE_SEARCH_THRESHOLD", 0.1),
   },
   jev: {
@@ -81,15 +81,23 @@ export const config = {
     maxTokens: num("DEEPSEEK_MAX_TOKENS", 800),
     // Only used for replies; 1.3 produced stray foreign punctuation and words.
     temperature: num("DEEPSEEK_TEMPERATURE", 1.1),
-    maxToolRounds: num("DEEPSEEK_MAX_TOOL_ROUNDS", 3),
   },
   search: {
+    // DeepSeek's built-in web search, offered when jev scores needs_search above the threshold.
     enabled: bool("SEARCH_ENABLED", true),
-    authFile: str("CODEX_AUTH_FILE", "data/codex-auth.json"),
-    model: str("CODEX_SEARCH_MODEL", "gpt-5.6-luna"),
-    contextSize: str("CODEX_SEARCH_CONTEXT_SIZE", "medium"),
-    maxOutputTokens: num("CODEX_SEARCH_MAX_OUTPUT_TOKENS", 3000),
-    timeoutMs: num("CODEX_SEARCH_TIMEOUT_MS", 60000),
+    // Lets DeepSeek open links that appear in new messages.
+    readLinks: bool("READ_LINKS_ENABLED", true),
+  },
+  voices: {
+    // Transcribe received voice messages with DeepSeek ASR.
+    enabled: bool("VOICES_ENABLED", true),
+    maxBytes: num("VOICES_MAX_BYTES", 8 * 1024 * 1024),
+  },
+  tts: {
+    // Lets the reply contain voice lines, synthesized with DeepSeek TTS.
+    enabled: bool("TTS_ENABLED", false),
+    // stella is female, tide is male.
+    voice: str("TTS_VOICE", "stella"),
   },
   stickers: {
     enabled: bool("STICKERS_ENABLED", true),
