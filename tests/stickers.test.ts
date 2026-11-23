@@ -61,8 +61,8 @@ test("collects a sticker once and reuses its description", async () => {
   assert.equal(reloaded.byId(1)?.description, "猫猫叹气");
 });
 
-test("market faces are resent as mface", async () => {
-  const { instance } = await store();
+test("market faces are resent as mface without writing unused files", async () => {
+  const { dir, instance } = await store();
   const mface = {
     type: "mface",
     data: { emoji_id: "e1", emoji_package_id: 7, key: "k", summary: "[嘻嘻]", url: "https://img.example/m.gif" },
@@ -70,6 +70,7 @@ test("market faces are resent as mface", async () => {
   assert.equal(await instance.observe(mface), "猫猫叹气");
   const segment = await instance.toSegment(instance.list()[0]!);
   assert.deepEqual(segment, { type: "mface", data: { emoji_id: "e1", emoji_package_id: 7, key: "k", summary: "[嘻嘻]" } });
+  assert.equal((await readdir(dir)).filter((file) => file.endsWith(".gif")).length, 0);
 });
 
 test("evicts the least used sticker and its file when full", async () => {
@@ -84,6 +85,31 @@ test("evicts the least used sticker and its file when full", async () => {
     ["image:a.gif", "image:c.gif"],
   );
   assert.equal((await readdir(dir)).filter((file) => file.endsWith(".gif")).length, 2);
+});
+
+test("a new sticker gets in even when every kept one is more popular", async () => {
+  let described = 0;
+  const { instance } = await store(2, async () => {
+    described++;
+    return "猫猫叹气";
+  });
+  for (const file of ["a.gif", "a.gif", "b.gif", "b.gif"]) await instance.observe(image(file));
+  for (let i = 0; i < 3; i++) await instance.observe(image("new.gif"));
+  assert.equal(described, 3);
+  assert.ok(instance.list().some((sticker) => sticker.key === "image:new.gif"));
+});
+
+test("a failed collect can be retried", async () => {
+  let n = 0;
+  const { instance } = await store(300, async () => {
+    n++;
+    if (n === 1) throw new Error("vision down");
+    return "猫猫叹气";
+  });
+  assert.equal(await instance.observe(image("retry.gif")), undefined);
+  assert.equal(await instance.observe(image("retry.gif")), "猫猫叹气");
+  assert.equal(instance.size, 1);
+  assert.equal(n, 2);
 });
 
 test("failed description is not stored", async () => {

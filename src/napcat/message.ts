@@ -4,8 +4,8 @@ import type { Segment } from "./types.js";
 export type RenderContext = {
   selfId?: number;
   botName: string;
-  // Description of a sticker or picture segment, when known.
-  imageText?: (segment: Segment) => string | undefined;
+  // Description of a sticker or picture, or transcript of a voice message, when known.
+  mediaText?: (segment: Segment) => string | undefined;
   // Display name of an @-mentioned user, when known.
   atName?: (userId: number) => string | undefined;
 };
@@ -13,7 +13,6 @@ export type RenderContext = {
 const PLACEHOLDERS: Record<string, string> = {
   dice: "[骰子]",
   rps: "[猜拳]",
-  record: "[语音]",
   video: "[视频]",
   file: "[文件]",
   forward: "[合并转发]",
@@ -34,8 +33,13 @@ export function toSegments(message: Segment[] | string | undefined): Segment[] {
 }
 
 function asId(value: unknown): number | undefined {
-  const id = typeof value === "string" ? Number(value) : value;
-  return typeof id === "number" && Number.isSafeInteger(id) ? id : undefined;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    const id = Number(trimmed);
+    return Number.isSafeInteger(id) ? id : undefined;
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : undefined;
 }
 
 // Markdown messages often wrap text in LaTeX styling such as $\textcolor{red}{就}$; keep the text.
@@ -90,20 +94,26 @@ export function renderSegments(segments: Segment[], ctx: RenderContext): string 
       case "image":
       case "mface": {
         const sticker = isSticker(seg);
-        const description = ctx.imageText?.(seg);
+        const description = ctx.mediaText?.(seg);
         const label = sticker ? "表情包" : "图片";
         parts.push(description ? `[${label}：${description}]` : `[${label}]`);
         break;
       }
+      case "record": {
+        const transcript = ctx.mediaText?.(seg);
+        parts.push(transcript ? `[语音：${transcript}]` : "[语音]");
+        break;
+      }
       case "face": {
-        const name = faceName(Number(seg.data.id));
+        const id = asId(seg.data.id);
+        const name = id !== undefined ? faceName(id) : undefined;
         parts.push(name ? `[${name}]` : "[表情]");
         break;
       }
       case "reply":
         break;
       default:
-        parts.push(PLACEHOLDERS[seg.type] ?? `[${seg.type}]`);
+        parts.push(Object.hasOwn(PLACEHOLDERS, seg.type) ? PLACEHOLDERS[seg.type]! : `[${seg.type}]`);
     }
   }
   return parts.join("").replace(/[ \t]+\n/g, "\n").trim();
@@ -114,23 +124,21 @@ export function isSticker(segment: Segment): boolean {
   return segment.type === "image" && (Number(segment.data.sub_type) === 1 || segment.data.summary === "[动画表情]");
 }
 
-export function isAtSelf(segments: Segment[], selfId: number | undefined): boolean {
-  if (selfId === undefined) return false;
-  return segments.some((seg) => seg.type === "at" && asId(seg.data.qq) === selfId);
-}
-
-export function atTargets(segments: Segment[], selfId: number | undefined): number[] {
-  const ids = segments.filter((seg) => seg.type === "at").map((seg) => asId(seg.data.qq));
-  return [...new Set(ids.filter((id): id is number => id !== undefined && id !== selfId))];
+export function atTargets(segments: Segment[]): Map<number, string | undefined> {
+  const targets = new Map<number, string | undefined>();
+  for (const seg of segments) {
+    if (seg.type !== "at") continue;
+    const id = asId(seg.data.qq);
+    if (id === undefined || targets.get(id)) continue;
+    const name = seg.data.name;
+    targets.set(id, typeof name === "string" && name ? name : undefined);
+  }
+  return targets;
 }
 
 export function replyTargetId(segments: Segment[]): number | undefined {
   const reply = segments.find((seg) => seg.type === "reply");
   return reply ? asId(reply.data.id) : undefined;
-}
-
-export function hasText(segments: Segment[]): boolean {
-  return segments.some((seg) => seg.type === "text" && String(seg.data.text ?? "").trim().length > 0);
 }
 
 export function textSegment(text: string): Segment {

@@ -4,8 +4,6 @@ import { test } from "node:test";
 import {
   atTargets,
   markdownToText,
-  hasText,
-  isAtSelf,
   renderSegments,
   replyTargetId,
   textToSegments,
@@ -24,16 +22,14 @@ test("renders text, at and media placeholders", () => {
     { type: "face", data: { id: "14" } },
   ]);
   assert.equal(renderSegments(segments, ctx), "@小猫 你看这个[图片]@张三 [微笑]");
-  assert.equal(isAtSelf(segments, 100), true);
-  assert.equal(isAtSelf(segments, 999), false);
+  assert.equal(atTargets(segments).has(100), true);
+  assert.equal(atTargets(segments).has(999), false);
   assert.equal(replyTargetId(segments), 55);
 });
 
 test("string messages become a single text segment", () => {
   const segments = toSegments("hello");
   assert.deepEqual(segments, [{ type: "text", data: { text: "hello" } }]);
-  assert.equal(hasText(segments), true);
-  assert.equal(hasText(toSegments([{ type: "image", data: {} }])), false);
 });
 
 test("sticker images and @all", () => {
@@ -44,12 +40,14 @@ test("sticker images and @all", () => {
   assert.equal(renderSegments(segments, ctx), "@全体成员 [表情包]");
 });
 
-test("incoming faces render by name, unknown ids as a placeholder", () => {
+test("incoming faces render by name, unknown or empty ids as a placeholder", () => {
   const segments = toSegments([
     { type: "face", data: { id: "179" } },
     { type: "face", data: { id: "99999" } },
+    { type: "face", data: { id: "" } },
+    { type: "face", data: {} },
   ]);
-  assert.equal(renderSegments(segments, ctx), "[doge][表情]");
+  assert.equal(renderSegments(segments, ctx), "[doge][表情][表情][表情]");
 });
 
 test("known face names become face segments inline with text", () => {
@@ -57,11 +55,22 @@ test("known face names become face segments inline with text", () => {
     { type: "text", data: { text: "难道你怀疑我是机器人？" } },
     { type: "face", data: { id: "179" } },
   ]);
-  assert.deepEqual(textToSegments("[捂脸]不是吧[不存在的表情] ok"), [
+  assert.deepEqual(textToSegments("[捂脸]不是吧[不存在的表情] [toString] ok"), [
     { type: "face", data: { id: "264" } },
-    { type: "text", data: { text: "不是吧[不存在的表情] ok" } },
+    { type: "text", data: { text: "不是吧[不存在的表情] [toString] ok" } },
   ]);
   assert.deepEqual(textToSegments("没有表情"), [{ type: "text", data: { text: "没有表情" } }]);
+});
+
+test("empty at/reply ids are ignored instead of treated as 0", () => {
+  const segments = toSegments([
+    { type: "reply", data: { id: "" } },
+    { type: "at", data: { qq: "" } },
+    { type: "toString", data: {} },
+  ]);
+  assert.equal(replyTargetId(segments), undefined);
+  assert.deepEqual([...atTargets(segments)], []);
+  assert.equal(renderSegments(segments, ctx), "@某人 [toString]");
 });
 
 test("@ of other users shows a name, never the raw QQ number", () => {
@@ -74,7 +83,7 @@ test("@ of other users shows a name, never the raw QQ number", () => {
   ]);
   const atName = (id: number) => (id === 123456789 ? "路人甲" : undefined);
   assert.equal(renderSegments(segments, { ...ctx, atName }), "@小猫 你还记得@路人甲 吗@某人");
-  assert.deepEqual(atTargets(segments, 100), [123456789, 555]);
+  assert.deepEqual([...atTargets(segments).keys()], [100, 123456789, 555]);
 });
 
 test("markdown messages render once, without LaTeX styling", () => {
@@ -95,8 +104,14 @@ test("pictures show their description when known", () => {
     { type: "image", data: { sub_type: 0, file: "p" } },
     { type: "image", data: { sub_type: 1, file: "s" } },
   ]);
-  const imageText = (seg: { data: Record<string, unknown> }) => (seg.data.file === "p" ? "一张截图" : "猫猫叹气");
-  assert.equal(renderSegments(segments, { ...ctx, imageText }), "[图片：一张截图][表情包：猫猫叹气]");
+  const mediaText = (seg: { data: Record<string, unknown> }) => (seg.data.file === "p" ? "一张截图" : "猫猫叹气");
+  assert.equal(renderSegments(segments, { ...ctx, mediaText }), "[图片：一张截图][表情包：猫猫叹气]");
+});
+
+test("voice messages show their transcript when known", () => {
+  const segments = toSegments([{ type: "record", data: { file: "v.amr" } }]);
+  assert.equal(renderSegments(segments, ctx), "[语音]");
+  assert.equal(renderSegments(segments, { ...ctx, mediaText: () => "今晚开黑吗" }), "[语音：今晚开黑吗]");
 });
 
 test("@名字 of known members becomes a real mention; names may contain spaces", () => {

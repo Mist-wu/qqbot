@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { config } from "../config.js";
 import { logger } from "../logger.js";
+import { atomicWrite, readJson } from "../persist.js";
 import type { Segment } from "../napcat/types.js";
 import { cleanDescription, dataUrl, downloadImage, type Describe } from "./media.js";
 
-export type Sticker = {
+type Sticker = {
   id: number;
   key: string;
   file: string;
@@ -47,12 +48,11 @@ export class StickerStore {
 
   async load(): Promise<void> {
     await mkdir(this.dir, { recursive: true });
-    try {
-      const list = JSON.parse(await readFile(join(this.dir, "index.json"), "utf8")) as Sticker[];
-      for (const sticker of list) this.stickers.set(sticker.key, { ...sticker, description: cleanDescription(sticker.description) });
-      this.nextId = Math.max(0, ...list.map((sticker) => sticker.id)) + 1;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const list = await readJson<Sticker[]>(join(this.dir, "index.json"), []);
+    for (const sticker of list) {
+      sticker.description = cleanDescription(sticker.description);
+      this.stickers.set(sticker.key, sticker);
+      this.nextId = Math.max(this.nextId, sticker.id + 1);
     }
   }
 
@@ -61,11 +61,12 @@ export class StickerStore {
   }
 
   // Returns the sticker's description, collecting and describing it the first time it is seen.
-  async observe(segment: Segment): Promise<string | undefined> {
+  async observe(segment: Segment, commit: () => boolean = () => true): Promise<string | undefined> {
     const key = stickerKey(segment);
     if (!key) return undefined;
     const known = this.stickers.get(key);
     if (known) {
+      if (!commit()) return known.description;
       known.seen++;
       known.lastSeen = Date.now();
       this.scheduleSave();
@@ -73,7 +74,7 @@ export class StickerStore {
     }
     let task = this.inflight.get(key);
     if (!task) {
-      task = this.collect(key, segment).finally(() => this.inflight.delete(key));
+      task = this.collect(key, segment, commit).finally(() => this.inflight.delete(key));
       this.inflight.set(key, task);
     }
     return (await task)?.description;
@@ -105,22 +106,22 @@ export class StickerStore {
   async flush(): Promise<void> {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = undefined;
-    const tmp = join(this.dir, `index.json.${process.pid}.tmp`);
-    await writeFile(tmp, JSON.stringify([...this.stickers.values()], null, 2));
-    await rename(tmp, join(this.dir, "index.json"));
+    await atomicWrite(join(this.dir, "index.json"), JSON.stringify([...this.stickers.values()], null, 2));
   }
 
-  private async collect(key: string, segment: Segment): Promise<Sticker | undefined> {
+  private async collect(key: string, segment: Segment, commit: () => boolean): Promise<Sticker | undefined> {
     const url = typeof segment.data.url === "string" ? segment.data.url : undefined;
     if (!url) return undefined;
     try {
       const image = await downloadImage(url, MAX_BYTES);
       const { bytes, mime } = image;
-      const description = cleanDescription(await this.describe(dataUrl(image)));
+      const description = cleanDescription(await this.describe(dataUrl(image), DESCRIBE_PROMPT));
       if (!description) throw new Error("描述为空");
+      if (!commit()) return undefined;
 
-      const file = `${createHash("sha1").update(key).digest("hex").slice(0, 16)}.${mime.split("/")[1]}`;
-      await writeFile(join(this.dir, file), bytes);
+      const isMface = segment.type === "mface";
+      const file = isMface ? "" : `${createHash("sha1").update(key).digest("hex").slice(0, 16)}.${mime.split("/")[1]}`;
+      if (file) await writeFile(join(this.dir, file), bytes);
       const sticker: Sticker = {
         id: this.nextId++,
         key,
@@ -131,12 +132,12 @@ export class StickerStore {
         used: 0,
         lastSeen: Date.now(),
       };
-      if (segment.type === "mface") {
+      if (isMface) {
         const { emoji_id, emoji_package_id, key: faceKey, summary } = segment.data;
         sticker.mface = { emoji_id, emoji_package_id, key: faceKey, summary };
       }
       this.stickers.set(key, sticker);
-      await this.evict();
+      await this.evict(sticker);
       this.scheduleSave();
       logger.info(`[sticker] 收藏 #${sticker.id} ${description}`);
       return sticker;
@@ -146,26 +147,24 @@ export class StickerStore {
     }
   }
 
-  private async evict(): Promise<void> {
+  // The newcomer is spared: it would always score lowest, and being evicted it would be downloaded
+  // and described again every time it is posted.
+  private async evict(newcomer: Sticker): Promise<void> {
     if (this.stickers.size <= this.maxStickers) return;
     const victims = [...this.stickers.values()]
+      .filter((sticker) => sticker !== newcomer)
       .sort((a, b) => a.seen + a.used * 2 - (b.seen + b.used * 2) || a.lastSeen - b.lastSeen)
       .slice(0, this.stickers.size - this.maxStickers);
     for (const victim of victims) {
       this.stickers.delete(victim.key);
-      await unlink(join(this.dir, victim.file)).catch(() => undefined);
+      if (victim.file) await unlink(join(this.dir, victim.file)).catch(() => undefined);
     }
   }
 
   private scheduleSave(): void {
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
-      this.saveTimer = undefined;
       void this.flush().catch((error) => logger.warn("[sticker] 保存索引失败:", (error as Error).message));
     }, 2000);
   }
-}
-
-export function describeSticker(describeImage: (dataUrl: string, instruction: string) => Promise<string>): Describe {
-  return (dataUrl) => describeImage(dataUrl, DESCRIBE_PROMPT);
 }

@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 process.env.DEEPSEEK_API_KEY = "test-key";
-process.env.DEEPSEEK_MAX_TOOL_ROUNDS = "2";
+process.env.LOG_LEVEL = "silent";
 
-const { chatWithTools, completeJson, DEEPSEEK_MODEL } = await import("../src/llm/deepseek.js");
+const { chat, completeJson, speak, transcribe, isCompleteWav, DEEPSEEK_MODEL } = await import("../src/llm/deepseek.js");
 
 type Body = { model: string; messages: any[]; tools?: unknown[]; thinking: { type: string }; temperature?: number };
 
@@ -18,68 +18,71 @@ function mockFetch(responses: unknown[]): Body[] {
   return bodies;
 }
 
-const searchTool = (log: string[]) => ({
-  definition: {
-    type: "function" as const,
-    function: { name: "web_search", description: "search", parameters: { type: "object", properties: {} } },
-  },
-  handler: async (args: Record<string, unknown>) => {
-    log.push(String(args.query));
-    return "结果: 42";
-  },
-});
-
-test("runs tools and passes reasoning_content back", async () => {
+test("built-in tools are declared by type and the reply text is returned", async () => {
   const bodies = mockFetch([
     {
       choices: [
         {
           message: {
-            content: "",
-            reasoning_content: "需要查一下",
-            tool_calls: [{ id: "c1", type: "function", function: { name: "web_search", arguments: '{"query":"答案"}' } }],
+            content: "答案是42",
+            server_tool_calls: [{ calls: [{ type: "deepseek_web_search", kind: "search", status: "completed" }] }],
           },
         },
       ],
     },
-    { choices: [{ message: { content: "答案是42", reasoning_content: "查到了" } }] },
+    { choices: [{ message: { content: " 好 " } }] },
   ]);
-  const log: string[] = [];
-  const text = await chatWithTools([{ role: "user", content: "问题" }], [searchTool(log)]);
-
-  assert.equal(text, "答案是42");
-  assert.deepEqual(log, ["答案"]);
+  assert.equal(await chat([{ role: "user", content: "问题" }], ["deepseek_web_search", "deepseek_read_url"]), "答案是42");
   assert.equal(bodies[0]!.model, DEEPSEEK_MODEL);
   assert.equal(bodies[0]!.model, "deepseek-flash");
   assert.equal(bodies[0]!.temperature, 1.1);
-  const second = bodies[1]!.messages;
-  assert.equal(second[1].role, "assistant");
-  assert.equal(second[1].reasoning_content, "需要查一下");
-  assert.equal(second[1].tool_calls[0].id, "c1");
-  assert.deepEqual(second[2], { role: "tool", tool_call_id: "c1", content: "结果: 42" });
+  assert.deepEqual(bodies[0]!.tools, [{ type: "deepseek_web_search" }, { type: "deepseek_read_url" }]);
+
+  assert.equal(await chat([{ role: "user", content: "q" }]), "好");
+  assert.equal(bodies[1]!.tools, undefined);
 });
 
-test("stops offering tools after the round limit", async () => {
-  const call = {
-    choices: [
-      { message: { content: "", tool_calls: [{ id: "c", type: "function", function: { name: "web_search", arguments: "{}" } }] } },
-    ],
-  };
-  const bodies = mockFetch([call, call, { choices: [{ message: { content: "好" } }] }]);
-  const text = await chatWithTools([{ role: "user", content: "q" }], [searchTool([])]);
-  assert.equal(text, "好");
-  assert.equal(bodies.length, 3);
-  assert.ok(bodies[0]!.tools && bodies[1]!.tools);
-  assert.equal(bodies[2]!.tools, undefined);
+function wav(dataBytes: number): Buffer {
+  const audio = Buffer.alloc(44 + dataBytes);
+  audio.write("RIFF", 0, "ascii");
+  audio.writeUInt32LE(36 + dataBytes, 4);
+  audio.write("WAVE", 8, "ascii");
+  return audio;
+}
+
+test("speech goes to the tools endpoints; truncated audio is a failure", async () => {
+  const requests: { url: string; init: RequestInit }[] = [];
+  const replies = [
+    new Response(JSON.stringify({ request_id: "r", text: " 你好 ", duration_ms: 900 }), { status: 200 }),
+    new Response(new Uint8Array(wav(10)), { status: 200 }),
+    new Response(new Uint8Array(wav(10).subarray(0, 50)), { status: 200 }),
+    new Response("busy", { status: 503 }),
+  ];
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    requests.push({ url, init });
+    return replies.shift()!;
+  }) as typeof fetch;
+
+  assert.equal(await transcribe(Buffer.from("RIFF")), "你好");
+  assert.equal(requests[0]!.url, "https://api.deepseek.com/v1/tools/asr");
+  assert.ok((requests[0]!.init.body as FormData).get("file") instanceof Blob);
+
+  assert.equal((await speak("晚安")).length, 54);
+  assert.equal(requests[1]!.url, "https://api.deepseek.com/v1/tools/tts");
+  assert.deepEqual(JSON.parse(String(requests[1]!.init.body)), { text: "晚安", voice_id: "stella", format: "wav" });
+
+  await assert.rejects(speak("晚安"), /中断/);
+  await assert.rejects(speak("晚安"), /503/);
 });
 
-test("bad tool arguments are reported to the model instead of throwing", async () => {
-  const bodies = mockFetch([
-    { choices: [{ message: { content: null, tool_calls: [{ id: "x", type: "function", function: { name: "web_search", arguments: "{oops" } }] } }] },
-    { choices: [{ message: { content: "ok" } }] },
-  ]);
-  assert.equal(await chatWithTools([{ role: "user", content: "q" }], [searchTool([])]), "ok");
-  assert.equal(bodies[1]!.messages.at(-1).content, "工具参数不是合法 JSON");
+test("streamed WAV with an unknown size counts as complete", () => {
+  const streamed = wav(4);
+  streamed.writeUInt32LE(0xffffffff, 4);
+  assert.equal(isCompleteWav(streamed), true);
+  assert.equal(isCompleteWav(Buffer.from("nope")), false);
+  const webp = wav(4);
+  webp.write("WEBP", 8, "ascii");
+  assert.equal(isCompleteWav(webp), false);
 });
 
 test("JSON extraction retries once on malformed output and uses default temperature", async () => {

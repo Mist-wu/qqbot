@@ -58,6 +58,34 @@ export class NapcatClient {
     });
   }
 
+  // Resolves on this socket's open. learn-history uses it instead of sleeping.
+  whenOpen(timeoutMs = config.napcat.actionTimeoutMs): Promise<void> {
+    const ws = this.ws;
+    if (!ws) return Promise.reject(new Error("NapCat 未连接"));
+    if (ws.readyState === WebSocket.OPEN) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("连接 NapCat 超时"));
+      }, timeoutMs);
+      const onOpen = () => {
+        cleanup();
+        resolve();
+      };
+      const onClose = () => {
+        cleanup();
+        reject(new Error("NapCat 连接关闭"));
+      };
+      const cleanup = () => {
+        clearTimeout(timer);
+        ws.off("open", onOpen);
+        ws.off("close", onClose);
+      };
+      ws.once("open", onOpen);
+      ws.once("close", onClose);
+    });
+  }
+
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
@@ -93,33 +121,49 @@ export class NapcatClient {
     });
   }
 
-  sendMessage(target: SendTarget, message: Segment[]): Promise<number | undefined> {
-    return this.enqueue(() =>
-      target.groupId !== undefined
-        ? this.callAction<{ message_id: number }>("send_group_msg", { group_id: target.groupId, message })
-        : this.callAction<{ message_id: number }>("send_private_msg", { user_id: target.userId, message }),
+  sendMessage(target: SendTarget, message: Segment[], current?: () => boolean): Promise<number | undefined> {
+    return this.enqueue(
+      () =>
+        target.groupId !== undefined
+          ? this.callAction<{ message_id: number }>("send_group_msg", { group_id: target.groupId, message })
+          : this.callAction<{ message_id: number }>("send_private_msg", { user_id: target.userId, message }),
+      current,
     );
   }
 
   // Merged-forward message made of "node" segments.
-  sendForward(target: SendTarget, nodes: Segment[]): Promise<number | undefined> {
-    return this.enqueue(() =>
-      target.groupId !== undefined
-        ? this.callAction<{ message_id: number }>("send_group_forward_msg", { group_id: target.groupId, messages: nodes })
-        : this.callAction<{ message_id: number }>("send_private_forward_msg", { user_id: target.userId, messages: nodes }),
+  sendForward(target: SendTarget, nodes: Segment[], current?: () => boolean): Promise<number | undefined> {
+    return this.enqueue(
+      () =>
+        target.groupId !== undefined
+          ? this.callAction<{ message_id: number }>("send_group_forward_msg", { group_id: target.groupId, messages: nodes })
+          : this.callAction<{ message_id: number }>("send_private_forward_msg", { user_id: target.userId, messages: nodes }),
+      current,
     );
   }
 
   // Sends are serialized with a minimum gap so bursts of reply parts do not trip QQ risk control.
-  private enqueue(send: () => Promise<ActionResponse<{ message_id: number }>>): Promise<number | undefined> {
+  // `current` is checked after that wait and before OneBot. A call already handed to OneBot is not cancelled.
+  private enqueue(
+    send: () => Promise<ActionResponse<{ message_id: number }>>,
+    current?: () => boolean,
+  ): Promise<number | undefined> {
     const task = this.sendChain.then(async () => {
-      const wait = this.lastSendAt + config.napcat.sendIntervalMs - Date.now();
-      if (wait > 0) await sleep(wait);
+      await this.pace();
+      if (current && !current()) return undefined;
       this.lastSendAt = Date.now();
       return (await send()).data?.message_id;
     });
     this.sendChain = task.catch(() => undefined);
     return task;
+  }
+
+  private pace(): Promise<void> {
+    const wait = this.lastSendAt + config.napcat.sendIntervalMs - Date.now();
+    if (wait <= 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      globalThis.setTimeout(resolve, wait);
+    });
   }
 
   private async refreshSelfId(): Promise<void> {
@@ -202,8 +246,4 @@ export class NapcatClient {
       this.pending.delete(echo);
     }
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

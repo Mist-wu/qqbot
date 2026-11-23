@@ -1,12 +1,10 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
-
 import { config } from "../config.js";
 import { logger } from "../logger.js";
-import { formatLine, type ChatRecord, type Scope } from "./history.js";
+import { atomicWrite, readJson } from "../persist.js";
+import { clock, formatLine, type ChatRecord, type Scope } from "./history.js";
 
 // Facts are kept per scope so a reply can tell what was said in private.
-export type Person = {
+type Person = {
   userId: number;
   name: string;
   group: string[];
@@ -14,16 +12,13 @@ export type Person = {
   updatedAt: number;
 };
 
-export type ExtractJson = (system: string, user: string) => Promise<unknown>;
+type ExtractJson = (system: string, user: string) => Promise<unknown>;
 
 const MAX_FACT_CHARS = 60;
 
-function clock(time: number): string {
-  return new Date(time).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit" });
-}
-
 export class MemoryStore {
   private readonly people = new Map<number, Person>();
+  private readonly tails = new Map<number, Promise<void>>();
   private saveTimer: NodeJS.Timeout | undefined;
 
   constructor(
@@ -32,12 +27,8 @@ export class MemoryStore {
   ) {}
 
   async load(): Promise<void> {
-    try {
-      const list = JSON.parse(await readFile(this.file, "utf8")) as Person[];
-      for (const person of list) this.people.set(person.userId, person);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+    const people = await readJson<Person[]>(this.file, []);
+    for (const person of people) this.people.set(person.userId, person);
   }
 
   get size(): number {
@@ -52,27 +43,53 @@ export class MemoryStore {
   describe(records: ChatRecord[]): string[] {
     const lines: string[] = [];
     const seen = new Set<number>();
-    const add = (userId: number, name: string) => {
+    const add = (userId: number, name?: string) => {
       if (seen.has(userId)) return;
       seen.add(userId);
       const person = this.people.get(userId);
       if (!person || person.group.length + person.private.length === 0) return;
       const parts = [...person.group];
       if (person.private.length > 0) parts.push(`私聊里告诉你的：${person.private.join("；")}`);
-      lines.push(`${name}：${parts.join("；")}`);
+      lines.push(`${name ?? person.name}：${parts.join("；")}`);
     };
     for (const record of records) {
       if (!record.fromBot) add(record.userId, record.name);
-      for (const userId of record.mentions ?? []) add(userId, this.people.get(userId)?.name ?? "");
+      for (const [userId, name] of record.mentions ?? []) add(userId, name === "某人" ? undefined : name);
     }
     return lines;
   }
 
-  async learn(scope: Scope, label: string, records: ChatRecord[], botName: string): Promise<number> {
+  async learn(
+    scope: Scope,
+    label: string,
+    records: ChatRecord[],
+    botName: string,
+    commit: () => boolean = () => true,
+  ): Promise<number> {
     const speakers = new Map<number, string>();
     for (const record of records) if (!record.fromBot) speakers.set(record.userId, record.name);
     if (speakers.size === 0) return 0;
+    // Reserve all speakers together, so overlapping extracts read the previous result.
+    const ids = [...speakers.keys()];
+    const task = Promise.all(ids.map((id) => this.tails.get(id)))
+      .then(() => this.learnLocked(scope, label, records, botName, speakers, commit));
+    const done = task.then(() => {}, () => {});
+    for (const id of ids) this.tails.set(id, done);
+    try {
+      return await task;
+    } finally {
+      for (const id of ids) if (this.tails.get(id) === done) this.tails.delete(id);
+    }
+  }
 
+  private async learnLocked(
+    scope: Scope,
+    label: string,
+    records: ChatRecord[],
+    botName: string,
+    speakers: Map<number, string>,
+    commit: () => boolean,
+  ): Promise<number> {
     const known = [...speakers].map(([userId, name]) => {
       const facts = this.people.get(userId)?.[scope] ?? [];
       return `- ${name}（QQ ${userId}）：${facts.length > 0 ? facts.join("；") : "无"}`;
@@ -97,6 +114,7 @@ export class MemoryStore {
     ].join("\n");
 
     const result = (await this.extract(system, user)) as { people?: unknown };
+    if (!commit()) return 0;
     let updated = 0;
     for (const entry of Array.isArray(result?.people) ? result.people : []) {
       const userId = Number((entry as { user_id?: unknown }).user_id);
@@ -122,16 +140,12 @@ export class MemoryStore {
   async flush(): Promise<void> {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = undefined;
-    await mkdir(dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    await writeFile(tmp, JSON.stringify([...this.people.values()], null, 2), { mode: 0o600 });
-    await rename(tmp, this.file);
+    await atomicWrite(this.file, JSON.stringify([...this.people.values()], null, 2), 0o600);
   }
 
   private scheduleSave(): void {
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
-      this.saveTimer = undefined;
       void this.flush().catch((error) => logger.warn("[memory] 保存失败:", (error as Error).message));
     }, 2000);
   }

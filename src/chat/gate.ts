@@ -3,7 +3,7 @@ import { TypeSafeClient, noul, type EntryType, type JsonValue, type Questions } 
 import { config } from "../config.js";
 import { relation, type ChatRecord, type Presence, type Scope } from "./history.js";
 
-export type GateContext = {
+type GateContext = {
   scope: Scope;
   sessionLabel: string;
   botName: string;
@@ -15,7 +15,7 @@ export type GateContext = {
   now: number;
 };
 
-export type GateScores = {
+type GateScores = {
   reply: number;
   addressed: number;
   search: number;
@@ -24,12 +24,15 @@ export type GateScores = {
 
 export type GateDecision = {
   reply: boolean;
-  // Whether to offer web_search to the model; the model still decides whether to call it.
+  // Whether to offer web search to the model; the model still decides whether to call it.
   search: boolean;
   reason: string;
-  source: "rule" | "jev" | "fallback";
+  source: "jev" | "fallback";
   scores?: GateScores;
 };
+
+// The window behind the "_last_5min" fields of the state.
+export const PRESENCE_WINDOW_MS = 5 * 60 * 1000;
 
 // Answers are yes-probabilities keyed by question name.
 export type Judge = (state: EntryType, questions: Questions) => Promise<Record<string, number>>;
@@ -60,6 +63,10 @@ function relativeTime(time: number, now: number): string {
   return `${Math.round(minutes / 60)}h ago`;
 }
 
+function mentionsBot(record: ChatRecord, ctx: GateContext): boolean {
+  return !record.fromBot && (record.text.includes(ctx.botName) || ctx.aliases.some((name) => name && record.text.includes(name)));
+}
+
 function describe(record: ChatRecord, ctx: GateContext): JsonValue {
   const entry: Record<string, JsonValue> = {
     from: record.fromBot ? `${ctx.botName} (the bot itself)` : record.name,
@@ -71,7 +78,7 @@ function describe(record: ChatRecord, ctx: GateContext): JsonValue {
   if (quote) entry.quoting = quote;
   if (record.atBot) entry.at_bot = true;
   if (record.replyToBot) entry.replies_to_bot = true;
-  if (record.mentionsBot) entry.mentions_bot_name = true;
+  if (mentionsBot(record, ctx)) entry.mentions_bot_name = true;
   return entry;
 }
 
@@ -90,7 +97,7 @@ export function buildState(ctx: GateContext): EntryType {
   };
 }
 
-export function buildQuestions(botName: string): Questions {
+function buildQuestions(botName: string): Questions {
   return {
     should_reply: noul(`Should ${botName}, a member of this QQ chat, send a message now in response to new_messages?`, {
       true: `new_messages call for a response from ${botName}, or ${botName} has something worth adding. Being @mentioned or replied to (at_bot, replies_to_bot) makes this more likely.`,
@@ -103,7 +110,7 @@ export function buildQuestions(botName: string): Questions {
 
 // Only used when jev is unavailable: closing words and bare reactions that need no answer.
 const BARE_REACTION =
-  /^(?:[哈嘿呵嘻hH]+|草+|6+|[嗯恩哦噢喔啊]+|好+的?|好吧|行|ok|收到|懂了|明白了?|谢谢|谢了|多谢|感谢|thx|thanks|拜拜|晚安|[?？!！]+|\[[^\]]+\])+$/i;
+  /^(?:[哈嘿呵嘻hH]+|草+|6+|[嗯恩哦噢喔啊]+|好+的?|好吧|行|ok|收到|懂了|明白了?|谢谢|谢了|多谢|感谢|thx|thanks|拜拜|晚安|[?？!！]+|\[(?:[^\]：]+|表情包：[^\]]+)\])+$/i;
 
 export function isBareReaction(text: string): boolean {
   const core = text.replace(/@\S+/g, "").replace(/[\s,，.。~～…、]+/g, "");
@@ -113,7 +120,6 @@ export function isBareReaction(text: string): boolean {
 export async function decide(ctx: GateContext, judge: Judge | undefined): Promise<GateDecision> {
   // @ and replies only lower the bar; jev still decides, using the bot's recent activity in the state.
   const direct = ctx.pending.some((record) => record.atBot || record.replyToBot);
-  const mentioned = ctx.pending.some((record) => record.mentionsBot);
 
   if (judge) {
     try {
@@ -121,11 +127,8 @@ export async function decide(ctx: GateContext, judge: Judge | undefined): Promis
       const reply = answers.should_reply ?? 0;
       const addressed = answers.addressed ?? 0;
       const search = answers.needs_search ?? 0;
-      const threshold = direct
-        ? config.gate.directThreshold
-        : ctx.scope === "group"
-          ? config.gate.groupThreshold
-          : config.gate.privateThreshold;
+      const base = ctx.scope === "group" ? config.gate.groupThreshold : config.gate.privateThreshold;
+      const threshold = direct ? Math.min(base, config.gate.directThreshold) : base;
       const yes = reply >= threshold;
       return {
         reply: yes,
@@ -135,15 +138,15 @@ export async function decide(ctx: GateContext, judge: Judge | undefined): Promis
         scores: { reply, addressed, search, threshold },
       };
     } catch (error) {
-      return fallback(ctx, direct, mentioned, `jev error: ${(error as Error).message}`);
+      return fallback(ctx, direct, `jev error: ${(error as Error).message}`);
     }
   }
-  return fallback(ctx, direct, mentioned, "no jev");
+  return fallback(ctx, direct, "no jev");
 }
 
 // Without jev only clear signals trigger a reply; search is left to the model.
-function fallback(ctx: GateContext, direct: boolean, mentioned: boolean, why: string): GateDecision {
-  const signal = direct || mentioned || ctx.scope === "private";
+function fallback(ctx: GateContext, direct: boolean, why: string): GateDecision {
+  const signal = direct || ctx.scope === "private" || ctx.pending.some((record) => mentionsBot(record, ctx));
   const reply = signal && !ctx.pending.every((record) => isBareReaction(record.text));
   return { reply, search: true, reason: why, source: "fallback" };
 }

@@ -14,6 +14,7 @@ process.env.LOG_LEVEL = "silent";
 process.env.MEMORY_LEARN_DELAY_MS = "50";
 process.env.REPLY_FORWARD_PARTS = "3";
 
+const { config } = await import("../src/config.js");
 const { ChatRuntime } = await import("../src/chat/runtime.js");
 const { MemoryStore } = await import("../src/chat/memory.js");
 type Deps = ConstructorParameters<typeof ChatRuntime>[0];
@@ -36,7 +37,7 @@ function groupMessage(text: string, extra: Record<string, unknown>[] = [], group
   };
 }
 
-function setup(judge: Deps["judge"], replies: string[], memory?: Deps["memory"], search?: Deps["search"]) {
+function setup(judge: Deps["judge"], replies: string[], memory?: Deps["memory"], extra: Partial<Deps> = {}) {
   const sent: { target: unknown; message: unknown[] }[] = [];
   const prompts: string[] = [];
   const systems: string[] = [];
@@ -61,9 +62,16 @@ function setup(judge: Deps["judge"], replies: string[], memory?: Deps["memory"],
       forwards.push({ target, nodes });
       return nextId++;
     },
-    callAction: async (action: string, params: { user_id?: number }) => {
+    callAction: async (action: string, params: { user_id?: number; message_id?: number }) => {
       actions.push(action);
       if (action === "get_msg") {
+        if (params.message_id === 888888) {
+          return {
+            status: "ok" as const,
+            retcode: 0,
+            data: { user_id: SELF, sender: { card: "小猫" }, message: [{ type: "text", data: { text: "重启前我说的话" } }] },
+          };
+        }
         return {
           status: "ok" as const,
           retcode: 0,
@@ -73,10 +81,22 @@ function setup(judge: Deps["judge"], replies: string[], memory?: Deps["memory"],
       if (action === "get_group_member_info") {
         return { status: "ok" as const, retcode: 0, data: params.user_id === 777 ? { card: "路人甲" } : {} };
       }
+      if (action === "get_record") {
+        return { status: "ok" as const, retcode: 0, data: { base64: Buffer.from("RIFFwav").toString("base64") } };
+      }
       return { status: "ok" as const, retcode: 0, data: { group_name: "测试群" } };
     },
   } as unknown as Deps["client"];
-  return { runtime: new ChatRuntime({ client, judge, search, stickers: undefined, memory }), sent, prompts, systems, actions, tools, forwards };
+  const power = { on: true, set: async () => {} };
+  return {
+    runtime: new ChatRuntime({ client, power, judge, stickers: undefined, memory, ...extra }),
+    sent,
+    prompts,
+    systems,
+    actions,
+    tools,
+    forwards,
+  };
 }
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -158,11 +178,15 @@ test("stickers are described before jev sees them and can be sent back", async (
     byId: (id: number) => (id === 3 ? { id: 3, description: "猫猫叹气" } : undefined),
     toSegment: async () => ({ type: "image", data: { file: "base64://R0lG", sub_type: 1 } }),
   };
-  const { runtime, sent, prompts } = setup(async (state) => {
-    described.push((state as { new_messages: { text: string }[] }).new_messages[0]!.text);
-    return { should_reply: 0.9, addressed: 0.2 };
-  }, ["确实\n[表情包#3]\n[表情包#99]"]);
-  (runtime as unknown as { deps: { stickers: unknown } }).deps.stickers = store;
+  const { runtime, sent, prompts } = setup(
+    async (state) => {
+      described.push((state as { new_messages: { text: string }[] }).new_messages[0]!.text);
+      return { should_reply: 0.9, addressed: 0.2 };
+    },
+    ["确实\n[表情包#3]\n[表情包#99]"],
+    undefined,
+    { stickers: store as unknown as Deps["stickers"] },
+  );
 
   runtime.handle(groupMessage("", [{ type: "image", data: { file: "a.gif", url: "https://x/a.gif", sub_type: 1 } }]));
   await wait(2500);
@@ -237,27 +261,66 @@ test("@ names are looked up once and shown to jev and the model", async () => {
   assert.equal(actions.filter((action) => action === "get_group_member_info").length, 1);
 });
 
-test("web_search is offered when jev scores it above 0.1 and the token is usable", async () => {
-  let usable = true;
-  const scores = [0.31, 0.05, 0.9];
-  const search = { usable: async () => usable, search: async () => "" } as unknown as Deps["search"];
-  const { runtime, tools } = setup(
+test("web search is offered above a 0.1 needs_search score; links are opened when present", async () => {
+  const scores = [0.31, 0.05, 0.05];
+  const { runtime, tools, systems } = setup(
     async () => ({ should_reply: 0.9, addressed: 0.9, needs_search: scores.shift()! }),
     ["a", "b", "c"],
-    undefined,
-    search,
   );
   const at = { type: "at", data: { qq: String(SELF) } };
   runtime.handle(groupMessage("你自己去搜一下jev", [at]));
   await wait(200);
   runtime.handle(groupMessage("哈哈", [at]));
   await wait(200);
-  usable = false;
-  runtime.handle(groupMessage("今天比分多少", [at]));
+  runtime.handle(groupMessage("这说的啥 https://example.com/post/1", [at]));
   await wait(200);
-  assert.equal((tools[0] as { function: { name: string } }[])[0]!.function.name, "web_search");
+  assert.deepEqual(tools[0], [{ type: "deepseek_web_search" }]);
   assert.equal(tools[1], undefined);
-  assert.equal(tools[2], undefined);
+  assert.deepEqual(tools[2], [{ type: "deepseek_read_url" }]);
+  assert.match(systems[0]!, /联网搜索/);
+  assert.doesNotMatch(systems[1]!, /联网|链接/);
+});
+
+test("voice messages are transcribed before jev sees them", async () => {
+  const seen: string[] = [];
+  const audio: Buffer[] = [];
+  const { runtime, actions } = setup(async (state) => {
+    seen.push((state as { new_messages: { text: string }[] }).new_messages[0]!.text);
+    return { should_reply: 0.1, addressed: 0.1 };
+  }, []);
+  const { VoiceTranscriber } = await import("../src/chat/voices.js");
+  const deps = (runtime as unknown as { deps: Deps }).deps;
+  deps.voices = new VoiceTranscriber(deps.client, async (wav) => {
+    audio.push(wav);
+    return " 今晚 开黑吗 ";
+  });
+  const message = groupMessage("", [{ type: "record", data: { file: "v.amr" } }]);
+  message.message = message.message.slice(0, 1);
+  runtime.handle(message);
+  await wait(300);
+  assert.deepEqual(seen, ["[语音：今晚 开黑吗]"]);
+  assert.ok(actions.includes("get_record"));
+  assert.equal(audio[0]!.toString(), "RIFFwav");
+});
+
+test("voice lines are sent as records, or as text when synthesis fails", async () => {
+  let fail = false;
+  const speak = async (text: string) => {
+    if (fail) throw new Error("503");
+    return Buffer.from(`wav:${text}`);
+  };
+  const at = { type: "at", data: { qq: String(SELF) } };
+  const { runtime, sent, systems } = setup(async () => ({ should_reply: 0.9, addressed: 0.9 }), ["[语音]晚安", "[语音]早安"], undefined, {
+    speak,
+  });
+  runtime.handle(groupMessage("说句话", [at]));
+  await wait(200);
+  fail = true;
+  runtime.handle(groupMessage("再说一句", [at]));
+  await wait(200);
+  assert.match(systems[0]!, /\[语音\] 开头/);
+  assert.deepEqual(sent[0]!.message, [{ type: "record", data: { file: `base64://${Buffer.from("wav:晚安").toString("base64")}` } }]);
+  assert.deepEqual(sent[1]!.message, [{ type: "text", data: { text: "早安" } }]);
 });
 
 test("long replies are sent as one merged forward, with a plain fallback", async () => {
@@ -282,12 +345,16 @@ test("long replies are sent as one merged forward, with a plain fallback", async
 
 test("pictures are described before jev sees them", async () => {
   const seen: string[] = [];
-  const { runtime } = setup(async (state) => {
-    seen.push((state as { new_messages: { text: string }[] }).new_messages[0]!.text);
-    return { should_reply: 0.1, addressed: 0.1 };
-  }, []);
   const images = { observe: async () => "手机设置页面的截图" };
-  (runtime as unknown as { deps: { images: unknown } }).deps.images = images;
+  const { runtime } = setup(
+    async (state) => {
+      seen.push((state as { new_messages: { text: string }[] }).new_messages[0]!.text);
+      return { should_reply: 0.1, addressed: 0.1 };
+    },
+    [],
+    undefined,
+    { images: images as unknown as Deps["images"] },
+  );
   runtime.handle(groupMessage("你看图片了吗", [{ type: "image", data: { file: "p.png", url: "https://x/p.png", sub_type: 0 } }]));
   await wait(300);
   assert.deepEqual(seen, ["[图片：手机设置页面的截图]你看图片了吗"]);
@@ -340,4 +407,112 @@ test("replying to the bot while @-ing someone else is addressed to that person",
   assert.deepEqual(seen[1]!.to, ["张三"]);
   assert.equal(seen[1]!.replies_to_bot, true);
   assert.equal(seen[1]!.quoting, "小猫的「嗯嗯」");
+});
+
+test("fetched quote of an older bot message still sets replies_to_bot", async () => {
+  const seen: Record<string, unknown>[] = [];
+  const { runtime, sent } = setup(async (state) => {
+    seen.push((state as { new_messages: Record<string, unknown>[] }).new_messages[0]!);
+    return { should_reply: 0.5, addressed: 0.9 };
+  }, ["记得"]);
+  runtime.handle(groupMessage("真的吗", [{ type: "reply", data: { id: "888888" } }]));
+  await wait(200);
+  assert.equal(seen[0]!.replies_to_bot, true);
+  assert.equal(seen[0]!.quoting, "小猫的「重启前我说的话」");
+  assert.equal(sent.length, 1);
+});
+
+test("a batch waiting on media keeps its snapshot for jev, activity and the reply", async () => {
+  const previousMax = config.history.maxMessages;
+  config.history.maxMessages = 2;
+  let releaseImage!: () => void;
+  const imageHung = new Promise<void>((resolve) => {
+    releaseImage = resolve;
+  });
+  const states: { earlier: string[]; pending: string[]; total: number }[] = [];
+  const images = {
+    observe: () =>
+      imageHung.then(() => "一张猫图"),
+  };
+  try {
+    const { runtime, prompts } = setup(
+      async (state) => {
+        const s = state as {
+          earlier_messages: { text: string }[];
+          new_messages: { text: string }[];
+          bot_activity: { all_messages_last_5min: number };
+        };
+        states.push({
+          earlier: s.earlier_messages.map((item) => item.text),
+          pending: s.new_messages.map((item) => item.text),
+          total: s.bot_activity.all_messages_last_5min,
+        });
+        return { should_reply: 0.9, addressed: 0.2 };
+      },
+      ["看到了"],
+      undefined,
+      { images: images as unknown as Deps["images"] },
+    );
+    runtime.handle(groupMessage("看图", [{ type: "image", data: { file: "cat.png", url: "https://x/cat.png", sub_type: 0 } }]));
+    await wait(80);
+    runtime.handle(groupMessage("后来甲"));
+    runtime.handle(groupMessage("后来乙"));
+    releaseImage();
+    await wait(150);
+    assert.equal(states[0]?.total, 1);
+    assert.deepEqual(states[0]?.earlier, []);
+    assert.deepEqual(states[0]?.pending, ["[图片：一张猫图]看图"]);
+    assert.match(prompts[0]!, /★/);
+    assert.match(prompts[0]!, /一张猫图/);
+    assert.doesNotMatch(prompts[0]!, /后来甲|后来乙/);
+  } finally {
+    config.history.maxMessages = previousMax;
+  }
+});
+
+test("messages arriving while awaiting media do not leak into earlier_messages", async () => {
+  let releaseImage: (() => void) | undefined;
+  const states: { earlier: string[]; pending: string[] }[] = [];
+  const images = {
+    observe: async () => {
+      await new Promise<void>((resolve) => {
+        releaseImage = resolve;
+      });
+      return "一张猫图";
+    },
+  };
+  const { runtime } = setup(
+    async (state) => {
+      const s = state as { earlier_messages: { text: string }[]; new_messages: { text: string }[] };
+      states.push({ earlier: s.earlier_messages.map((m) => m.text), pending: s.new_messages.map((m) => m.text) });
+      return { should_reply: 0.1, addressed: 0.1 };
+    },
+    [],
+    undefined,
+    { images: images as unknown as Deps["images"] },
+  );
+  runtime.handle(groupMessage("看图", [{ type: "image", data: { file: "cat.png", url: "https://x/cat.png", sub_type: 0 } }]));
+  await wait(80);
+  runtime.handle(groupMessage("下一条消息"));
+  releaseImage?.();
+  await wait(150);
+  assert.equal(states.length, 2);
+  assert.deepEqual(states[0], { earlier: [], pending: ["[图片：一张猫图]看图"] });
+  assert.deepEqual(states[1], { earlier: ["[图片：一张猫图]看图"], pending: ["下一条消息"] });
+});
+
+test("mentioning the bot in transcribed voice sets mentions_bot_name", async () => {
+  const seen: Record<string, unknown>[] = [];
+  const { runtime } = setup(async (state) => {
+    seen.push((state as { new_messages: Record<string, unknown>[] }).new_messages[0]!);
+    return { should_reply: 0.1, addressed: 0.1 };
+  }, []);
+  const { VoiceTranscriber } = await import("../src/chat/voices.js");
+  const deps = (runtime as unknown as { deps: Deps }).deps;
+  deps.voices = new VoiceTranscriber(deps.client, async () => "小猫在吗");
+  const msg = groupMessage("", [{ type: "record", data: { file: "call.amr" } }]);
+  msg.message = msg.message.slice(0, 1);
+  runtime.handle(msg);
+  await wait(200);
+  assert.equal(seen[0]!.mentions_bot_name, true);
 });
