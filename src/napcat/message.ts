@@ -33,8 +33,13 @@ export function toSegments(message: Segment[] | string | undefined): Segment[] {
 }
 
 function asId(value: unknown): number | undefined {
-  const id = typeof value === "string" ? Number(value) : value;
-  return typeof id === "number" && Number.isSafeInteger(id) ? id : undefined;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    const id = Number(trimmed);
+    return Number.isSafeInteger(id) ? id : undefined;
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : undefined;
 }
 
 // Markdown messages often wrap text in LaTeX styling such as $\textcolor{red}{就}$; keep the text.
@@ -100,14 +105,15 @@ export function renderSegments(segments: Segment[], ctx: RenderContext): string 
         break;
       }
       case "face": {
-        const name = faceName(Number(seg.data.id));
+        const id = asId(seg.data.id);
+        const name = id !== undefined ? faceName(id) : undefined;
         parts.push(name ? `[${name}]` : "[表情]");
         break;
       }
       case "reply":
         break;
       default:
-        parts.push(PLACEHOLDERS[seg.type] ?? `[${seg.type}]`);
+        parts.push(Object.hasOwn(PLACEHOLDERS, seg.type) ? PLACEHOLDERS[seg.type]! : `[${seg.type}]`);
     }
   }
   return parts.join("").replace(/[ \t]+\n/g, "\n").trim();
@@ -131,10 +137,6 @@ export function atTargets(segments: Segment[], selfId: number | undefined): numb
 export function replyTargetId(segments: Segment[]): number | undefined {
   const reply = segments.find((seg) => seg.type === "reply");
   return reply ? asId(reply.data.id) : undefined;
-}
-
-export function hasText(segments: Segment[]): boolean {
-  return segments.some((seg) => seg.type === "text" && String(seg.data.text ?? "").trim().length > 0);
 }
 
 export function textSegment(text: string): Segment {

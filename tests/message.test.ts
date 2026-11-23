@@ -4,7 +4,6 @@ import { test } from "node:test";
 import {
   atTargets,
   markdownToText,
-  hasText,
   isAtSelf,
   renderSegments,
   replyTargetId,
@@ -32,8 +31,6 @@ test("renders text, at and media placeholders", () => {
 test("string messages become a single text segment", () => {
   const segments = toSegments("hello");
   assert.deepEqual(segments, [{ type: "text", data: { text: "hello" } }]);
-  assert.equal(hasText(segments), true);
-  assert.equal(hasText(toSegments([{ type: "image", data: {} }])), false);
 });
 
 test("sticker images and @all", () => {
@@ -44,12 +41,14 @@ test("sticker images and @all", () => {
   assert.equal(renderSegments(segments, ctx), "@全体成员 [表情包]");
 });
 
-test("incoming faces render by name, unknown ids as a placeholder", () => {
+test("incoming faces render by name, unknown or empty ids as a placeholder", () => {
   const segments = toSegments([
     { type: "face", data: { id: "179" } },
     { type: "face", data: { id: "99999" } },
+    { type: "face", data: { id: "" } },
+    { type: "face", data: {} },
   ]);
-  assert.equal(renderSegments(segments, ctx), "[doge][表情]");
+  assert.equal(renderSegments(segments, ctx), "[doge][表情][表情][表情]");
 });
 
 test("known face names become face segments inline with text", () => {
@@ -57,11 +56,22 @@ test("known face names become face segments inline with text", () => {
     { type: "text", data: { text: "难道你怀疑我是机器人？" } },
     { type: "face", data: { id: "179" } },
   ]);
-  assert.deepEqual(textToSegments("[捂脸]不是吧[不存在的表情] ok"), [
+  assert.deepEqual(textToSegments("[捂脸]不是吧[不存在的表情] [toString] ok"), [
     { type: "face", data: { id: "264" } },
-    { type: "text", data: { text: "不是吧[不存在的表情] ok" } },
+    { type: "text", data: { text: "不是吧[不存在的表情] [toString] ok" } },
   ]);
   assert.deepEqual(textToSegments("没有表情"), [{ type: "text", data: { text: "没有表情" } }]);
+});
+
+test("empty at/reply ids are ignored instead of treated as 0", () => {
+  const segments = toSegments([
+    { type: "reply", data: { id: "" } },
+    { type: "at", data: { qq: "" } },
+    { type: "toString", data: {} },
+  ]);
+  assert.equal(replyTargetId(segments), undefined);
+  assert.deepEqual(atTargets(segments, 100), []);
+  assert.equal(renderSegments(segments, ctx), "@某人 [toString]");
 });
 
 test("@ of other users shows a name, never the raw QQ number", () => {

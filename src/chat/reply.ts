@@ -1,7 +1,7 @@
 import { config } from "../config.js";
 import { FACE_IDS } from "../napcat/faces.js";
 import { chat, type ChatMessage, type ServerTool } from "../llm/deepseek.js";
-import { formatLine, type ChatRecord, type Scope } from "./history.js";
+import { clock, formatLine, type ChatRecord, type Scope } from "./history.js";
 
 export const SKIP_MARKER = "[不回复]";
 
@@ -32,11 +32,7 @@ const LEAD_MAX_CHARS = 30;
 
 const STICKER_MARKER = /\[表情包#(\d+)\]/g;
 
-export const VOICE_MARKER = "[语音]";
-
-function clock(time: number): string {
-  return new Date(time).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit" });
-}
+const VOICE_MARKER = "[语音]";
 
 export function buildSystemPrompt(ctx: ReplyContext): string {
   const now = new Date(ctx.now).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
@@ -125,7 +121,7 @@ export function dropRepeatedEndings(parts: ReplyPart[], recentBotTexts: string[]
     const ending = trailingEnding(part.text);
     const repeats = ending ? recent.filter((text) => trailingEnding(text) === ending).length : 0;
     const text = repeats >= 2 ? part.text.slice(0, part.text.lastIndexOf(ending!)).trimEnd() || part.text : part.text;
-    recent.push(part.text);
+    recent.push(text);
     if (recent.length > 5) recent.shift();
     return { kind: "text", text };
   });
@@ -152,7 +148,7 @@ export function planSends(parts: ReplyPart[]): Outgoing[] {
 
 const LINK = /https?:\/\/[^\s\]）)]+/;
 
-export function hasLink(records: Iterable<ChatRecord>): boolean {
+export function hasLink(records: Iterable<Pick<ChatRecord, "text" | "quote">>): boolean {
   for (const record of records) if (LINK.test(record.text) || (record.quote && LINK.test(record.quote.text))) return true;
   return false;
 }

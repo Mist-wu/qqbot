@@ -4,34 +4,27 @@ import { config } from "../config.js";
 import { logger } from "../logger.js";
 import type { NapcatClient } from "../napcat/client.js";
 import type { Segment } from "../napcat/types.js";
+import { MediaCache } from "./media-cache.js";
 
 export type Transcribe = (audio: Buffer) => Promise<string>;
 
 type RecordFile = { file?: string; base64?: string };
 
-const MAX_CACHE = 500;
 const MAX_CHARS = 500;
 
 // Transcribes voice messages so the chat can follow what was said. NapCat converts QQ's silk audio
 // to WAV; its reply carries base64 or, when NapCat runs on the same machine, a local path.
 export class VoiceTranscriber {
-  private readonly cache = new Map<string, Promise<string | undefined>>();
-
   constructor(
     private readonly client: Pick<NapcatClient, "callAction">,
     private readonly transcribe: Transcribe,
+    private readonly cache = new MediaCache(),
   ) {}
 
-  observe(segment: Segment): Promise<string | undefined> {
+  observe(segment: Segment, _commit?: () => boolean): Promise<string | undefined> {
     const file = typeof segment.data.file === "string" && segment.data.file ? segment.data.file : undefined;
     if (!file) return Promise.resolve(undefined);
-    let task = this.cache.get(file);
-    if (!task) {
-      task = this.run(file);
-      this.cache.set(file, task);
-      if (this.cache.size > MAX_CACHE) this.cache.delete(this.cache.keys().next().value!);
-    }
-    return task;
+    return this.cache.get(`voice:${file}`, () => this.run(file));
   }
 
   private async run(file: string): Promise<string | undefined> {

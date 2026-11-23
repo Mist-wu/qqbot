@@ -64,7 +64,6 @@ export const config = {
     privateDebounceMs: num("GATE_PRIVATE_DEBOUNCE_MS", 1500),
     directDebounceMs: num("GATE_DIRECT_DEBOUNCE_MS", 800),
     maxWaitMs: num("GATE_MAX_WAIT_MS", 10000),
-    presenceWindowMs: num("GATE_PRESENCE_WINDOW_MS", 5 * 60 * 1000),
     // Offer web search when jev's needs_search score is above this.
     searchThreshold: num("GATE_SEARCH_THRESHOLD", 0.1),
   },
@@ -133,5 +132,3 @@ export const config = {
     maxParts: num("REPLY_MAX_PARTS", 40),
   },
 };
-
-export type Config = typeof config;

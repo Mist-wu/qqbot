@@ -51,6 +51,42 @@ test("group facts sit beside private ones, capped per scope", async () => {
   assert.deepEqual(memory.describe([record(42, "李四", "z")]), ["李四：a；b；c"]);
 });
 
+test("overlapping learns for one person commit in order and keep both facts", async () => {
+  const file = join(await mkdtemp(join(tmpdir(), "qqbot-memory-")), "memory.json");
+  let releaseFirst!: () => void;
+  let markEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  let secondStarted = false;
+  let phase = 0;
+  const memory = new MemoryStore(file, async (_system, user) => {
+    phase++;
+    if (phase === 1) {
+      markEntered();
+      await new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      return { people: [{ user_id: 7, facts: ["养了一只猫"] }] };
+    }
+    secondStarted = true;
+    assert.match(user, /养了一只猫/);
+    return { people: [{ user_id: 7, facts: ["养了一只猫", "会写代码"] }] };
+  });
+  const first = memory.learn("group", "群一", [record(7, "张三", "我养猫")], "小猫");
+  const second = memory.learn("group", "群二", [record(7, "张三", "我会写代码")], "小猫");
+  await entered;
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(secondStarted, false);
+  releaseFirst();
+  assert.deepEqual(await Promise.all([first, second]), [1, 1]);
+  assert.deepEqual(memory.get(7)!.group, ["养了一只猫", "会写代码"]);
+  await memory.flush();
+  const reloaded = new MemoryStore(file, async () => ({}));
+  await reloaded.load();
+  assert.deepEqual(reloaded.get(7)!.group, ["养了一只猫", "会写代码"]);
+});
+
 test("existing memories are shown to the extractor for merging", async () => {
   const prompts: string[] = [];
   const { memory } = await store({ people: [{ user_id: 42, facts: ["喜欢猫"] }] }, prompts);
@@ -80,16 +116,21 @@ test("memories persist privately across restarts", async () => {
 test("history marks survive trimming", () => {
   const history = new SessionHistory(3);
   for (const text of ["1", "2", "3", "4"]) history.add(record(1, "a", text));
+  assert.deepEqual(history.recent(0), []);
   assert.deepEqual(history.since(2).map((r) => r.text), ["3", "4"]);
   assert.deepEqual(history.since(0).map((r) => r.text), ["2", "3", "4"]);
   assert.deepEqual(history.since(4), []);
 });
 
-test("people @-mentioned are described too", async () => {
+test("people @-mentioned are described too, preferring resolved group names", async () => {
   const { memory } = await store({ people: [{ user_id: 77, facts: ["是群主"] }] });
   await memory.learn("group", "测试群", [record(77, "路人甲", "我是群主")], "OvO");
   const asked = { ...record(42, "王五", "@OvO 你还记得@路人甲 吗"), mentions: [77] };
   assert.deepEqual(memory.describe([asked]), ["路人甲：是群主"]);
+  const renamed = { ...asked, mentionNames: ["老王"] };
+  assert.deepEqual(memory.describe([renamed]), ["老王：是群主"]);
+  const unresolved = { ...asked, mentionNames: ["某人"] };
+  assert.deepEqual(memory.describe([unresolved]), ["路人甲：是群主"]);
 });
 
 test("the extractor is asked for lasting facts and sees who talks to whom", async () => {

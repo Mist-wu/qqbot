@@ -23,6 +23,24 @@ export type ChatRecord = {
 
 const QUOTE_MAX_CHARS = 60;
 
+export function presenceOf(records: readonly ChatRecord[], windowMs: number, now: number): Presence {
+  let bot = 0;
+  let total = 0;
+  let lastBotAt: number | undefined;
+  for (let i = records.length - 1; i >= 0; i--) {
+    const record = records[i]!;
+    if (record.fromBot && lastBotAt === undefined) lastBotAt = record.time;
+    if (now - record.time > windowMs) continue;
+    total++;
+    if (record.fromBot) bot++;
+  }
+  return { bot, total, lastBotAt };
+}
+
+export function clock(time: number): string {
+  return new Date(time).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit" });
+}
+
 // Who a message is aimed at, and what it quotes, so a reader can follow who is talking to whom.
 // `self` is how the bot is referred to (e.g. "你" in its own prompt).
 export function relation(record: ChatRecord, self: string): { to: string[]; quote?: string } {
@@ -75,7 +93,7 @@ export class SessionHistory {
   }
 
   recent(count: number): ChatRecord[] {
-    return this.records.slice(-count);
+    return count > 0 ? this.records.slice(-count) : [];
   }
 
   since(mark: number): ChatRecord[] {
@@ -91,17 +109,12 @@ export class SessionHistory {
     return this.records.at(-1);
   }
 
+  // Shallow copy of the records held right now. Later arrivals and trims do not change it.
+  snapshot(): ChatRecord[] {
+    return this.records.slice();
+  }
+
   presence(windowMs: number, now: number): Presence {
-    let bot = 0;
-    let total = 0;
-    let lastBotAt: number | undefined;
-    for (let i = this.records.length - 1; i >= 0; i--) {
-      const record = this.records[i]!;
-      if (record.fromBot && lastBotAt === undefined) lastBotAt = record.time;
-      if (now - record.time > windowMs) continue;
-      total++;
-      if (record.fromBot) bot++;
-    }
-    return { bot, total, lastBotAt };
+    return presenceOf(this.records, windowMs, now);
   }
 }

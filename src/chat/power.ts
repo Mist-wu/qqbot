@@ -1,5 +1,6 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
+
+import { atomicWrite } from "../persist.js";
 
 // Whether the bot is taking part in chats; toggled by admin commands and kept across restarts.
 export class PowerSwitch {
@@ -21,10 +22,7 @@ export class PowerSwitch {
   }
 
   async set(on: boolean): Promise<void> {
+    await atomicWrite(this.file, JSON.stringify({ on }), 0o600);
     this.enabled = on;
-    await mkdir(dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    await writeFile(tmp, JSON.stringify({ on }), { mode: 0o600 });
-    await rename(tmp, this.file);
   }
 }

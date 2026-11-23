@@ -3,7 +3,9 @@ import { config } from "./config.js";
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40, silent: 100 } as const;
 type Level = Exclude<keyof typeof LEVELS, "silent">;
 
-const threshold = LEVELS[config.logLevel as keyof typeof LEVELS] ?? LEVELS.info;
+const threshold = Object.hasOwn(LEVELS, config.logLevel)
+  ? LEVELS[config.logLevel as keyof typeof LEVELS]
+  : LEVELS.info;
 
 function timestamp(): string {
   return new Date().toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" });

@@ -1,10 +1,11 @@
 import { config } from "./config.js";
 import { createJevJudge } from "./chat/gate.js";
 import { ChatRuntime } from "./chat/runtime.js";
-import { ImageDescriber, describeImageWith } from "./chat/images.js";
+import { ImageDescriber } from "./chat/images.js";
+import { MediaCache } from "./chat/media-cache.js";
 import { MemoryStore } from "./chat/memory.js";
 import { PowerSwitch } from "./chat/power.js";
-import { StickerStore, describeSticker } from "./chat/stickers.js";
+import { StickerStore } from "./chat/stickers.js";
 import { VoiceTranscriber } from "./chat/voices.js";
 import { DEEPSEEK_MODEL, completeJson, describeImage, speak, transcribe } from "./llm/deepseek.js";
 import { logger } from "./logger.js";
@@ -20,13 +21,14 @@ async function main(): Promise<void> {
   const judge = config.jev.apiKey ? createJevJudge() : undefined;
   if (!judge) logger.warn("未设置 TYPESAFE_API_KEY：jev 不可用，只在私聊、@、回复、点名时发言");
 
+  const mediaCache = new MediaCache();
   let stickers: StickerStore | undefined;
   if (config.stickers.enabled) {
-    stickers = new StickerStore(config.stickers.dir, describeSticker(describeImage));
+    stickers = new StickerStore(config.stickers.dir, describeImage);
     await stickers.load();
   }
 
-  const images = config.images.enabled ? new ImageDescriber(describeImageWith(describeImage)) : undefined;
+  const images = config.images.enabled ? new ImageDescriber(describeImage, mediaCache) : undefined;
 
   let memory: MemoryStore | undefined;
   if (config.memory.enabled) {
@@ -47,7 +49,7 @@ async function main(): Promise<void> {
   const client = new NapcatClient((event) => {
     if (isMessageEvent(event)) runtime?.handle(event);
   });
-  const voices = config.voices.enabled ? new VoiceTranscriber(client, transcribe) : undefined;
+  const voices = config.voices.enabled ? new VoiceTranscriber(client, transcribe, mediaCache) : undefined;
   runtime = new ChatRuntime({
     client,
     judge,
@@ -60,11 +62,14 @@ async function main(): Promise<void> {
   });
   client.connect();
 
+  let exiting = false;
   const shutdown = async () => {
+    if (exiting) return;
+    exiting = true;
     logger.info("退出中…");
-    await stickers?.flush().catch(() => undefined);
-    await memory?.flush().catch(() => undefined);
     await client.shutdown();
+    await stickers?.flush().catch((error: unknown) => logger.warn("[sticker] 退出保存失败:", (error as Error).message));
+    await memory?.flush().catch((error: unknown) => logger.warn("[memory] 退出保存失败:", (error as Error).message));
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());

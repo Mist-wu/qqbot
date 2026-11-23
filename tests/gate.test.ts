@@ -6,6 +6,7 @@ process.env.GATE_PRIVATE_THRESHOLD = "0.35";
 process.env.GATE_DIRECT_THRESHOLD = "0.3";
 process.env.GATE_SEARCH_THRESHOLD = "0.1";
 
+const { config } = await import("../src/config.js");
 const { decide, buildState, isBareReaction } = await import("../src/chat/gate.js");
 type GateContext = Parameters<typeof decide>[0];
 type ChatRecord = GateContext["pending"][number];
@@ -105,11 +106,26 @@ test("falls back to hard rules when jev fails or is missing", async () => {
 });
 
 test("bare reactions and closings are recognized", () => {
-  for (const text of ["哈哈哈", "@小猫 草", "666", "好的！", "嗯嗯", "ok", "谢谢~", "[表情包]", "？？"]) {
+  for (const text of ["哈哈哈", "@小猫 草", "666", "好的！", "嗯嗯", "ok", "谢谢~", "[表情包]", "[表情包：猫猫叹气]", "[语音]", "？？"]) {
     assert.equal(isBareReaction(text), true, text);
   }
-  for (const text of ["哈哈哈这个好笑在哪", "好的，那明天几点", "6点见", "为什么"]) {
+  for (const text of ["哈哈哈这个好笑在哪", "好的，那明天几点", "6点见", "为什么", "[语音：今天吃什么]", "[图片：代码报错截图]"]) {
     assert.equal(isBareReaction(text), false, text);
+  }
+});
+
+test("replying to the bot in private chat never raises the threshold", async () => {
+  const previous = config.gate.directThreshold;
+  config.gate.directThreshold = 0.45;
+  try {
+    const decision = await decide(
+      context({ scope: "private", pending: [record({ replyToBot: true, text: "那然后呢" })] }),
+      judge({ should_reply: 0.4, addressed: 0.9 }),
+    );
+    assert.equal(decision.reply, true);
+    assert.equal(decision.scores!.threshold, 0.35);
+  } finally {
+    config.gate.directThreshold = previous;
   }
 });
 

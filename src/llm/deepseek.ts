@@ -32,6 +32,16 @@ type CompletionResponse = {
 
 type CompleteOptions = { maxTokens?: number; json?: boolean; temperature?: number };
 
+function apiUrl(path: string): string {
+  const base = config.deepseek.baseUrl.replace(/\/+$/, "");
+  return path.startsWith("v1/") ? `${base.replace(/\/v1$/, "")}/${path}` : `${base}/${path}`;
+}
+
+async function failure(response: Response, what: string): Promise<Error> {
+  const text = await response.text().catch(() => "");
+  return new Error(`DeepSeek ${what}失败 (${response.status}): ${text.slice(0, 500)}`);
+}
+
 async function complete(
   messages: ChatMessage[],
   tools: ServerTool[],
@@ -48,19 +58,13 @@ async function complete(
   if (json) body.response_format = { type: "json_object" };
   if (temperature !== undefined) body.temperature = temperature;
 
-  const response = await fetch(`${config.deepseek.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+  const response = await fetch(apiUrl("chat/completions"), {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.deepseek.apiKey}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${config.deepseek.apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(config.deepseek.timeoutMs),
   });
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`DeepSeek 请求失败 (${response.status}): ${text.slice(0, 500)}`);
-  }
+  if (!response.ok) throw await failure(response, "请求");
   return (await response.json()) as CompletionResponse;
 }
 
@@ -112,20 +116,11 @@ export async function describeImage(dataUrl: string, instruction: string): Promi
   return result.choices?.[0]?.message?.content?.trim() ?? "";
 }
 
-function toolsUrl(path: string): string {
-  return `${config.deepseek.baseUrl.replace(/\/+$/, "")}/v1/tools/${path}`;
-}
-
-async function failure(response: Response, what: string): Promise<Error> {
-  const text = await response.text().catch(() => "");
-  return new Error(`DeepSeek ${what} 失败 (${response.status}): ${text.slice(0, 300)}`);
-}
-
 // Speech to text; accepts 16-bit PCM WAV or Ogg Opus, up to 120 seconds.
 export async function transcribe(audio: Buffer): Promise<string> {
   const form = new FormData();
   form.append("file", new Blob([new Uint8Array(audio)]), "voice.wav");
-  const response = await fetch(toolsUrl("asr"), {
+  const response = await fetch(apiUrl("v1/tools/asr"), {
     method: "POST",
     headers: { Authorization: `Bearer ${config.deepseek.apiKey}` },
     body: form,
@@ -138,7 +133,7 @@ export async function transcribe(audio: Buffer): Promise<string> {
 
 // Text to speech as WAV bytes. A body that ends early means synthesis failed midway.
 export async function speak(text: string): Promise<Buffer> {
-  const response = await fetch(toolsUrl("tts"), {
+  const response = await fetch(apiUrl("v1/tools/tts"), {
     method: "POST",
     headers: { Authorization: `Bearer ${config.deepseek.apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ text, voice_id: config.tts.voice, format: "wav" }),
@@ -152,7 +147,13 @@ export async function speak(text: string): Promise<Buffer> {
 
 // The RIFF header states the total size, so a truncated stream can be told apart.
 export function isCompleteWav(audio: Buffer): boolean {
-  if (audio.length < 44 || audio.subarray(0, 4).toString("ascii") !== "RIFF") return false;
+  if (
+    audio.length < 44 ||
+    audio.subarray(0, 4).toString("ascii") !== "RIFF" ||
+    audio.subarray(8, 12).toString("ascii") !== "WAVE"
+  ) {
+    return false;
+  }
   const declared = audio.readUInt32LE(4);
   return declared === 0xffffffff || declared === 0 || audio.length >= declared + 8;
 }

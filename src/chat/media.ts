@@ -1,4 +1,4 @@
-export type Describe = (dataUrl: string) => Promise<string>;
+export type Describe = (dataUrl: string, instruction: string) => Promise<string>;
 
 export function sniffMime(bytes: Buffer): string | undefined {
   if (bytes.subarray(0, 3).toString("ascii") === "GIF") return "image/gif";

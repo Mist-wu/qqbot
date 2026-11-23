@@ -1,6 +1,6 @@
 // QQ system faces by name, extracted from the QQ NT client's
 // resources/app/resource/default-emojis/default_config.json (小黄脸表情 + 超级表情).
-export const FACE_IDS: Record<string, number> = {
+export const FACE_IDS: Record<string, number> = Object.assign(Object.create(null), {
   "惊讶": 0,
   "撇嘴": 1,
   "色": 2,
@@ -187,7 +187,7 @@ export const FACE_IDS: Record<string, number> = {
   "偷感": 427,
   "收到": 428,
   "蛇年快乐": 429,
-};
+});
 
 const FACE_NAMES = new Map(Object.entries(FACE_IDS).map(([name, id]) => [id, name]));
 

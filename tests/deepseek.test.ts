@@ -80,6 +80,9 @@ test("streamed WAV with an unknown size counts as complete", () => {
   streamed.writeUInt32LE(0xffffffff, 4);
   assert.equal(isCompleteWav(streamed), true);
   assert.equal(isCompleteWav(Buffer.from("nope")), false);
+  const webp = wav(4);
+  webp.write("WEBP", 8, "ascii");
+  assert.equal(isCompleteWav(webp), false);
 });
 
 test("JSON extraction retries once on malformed output and uses default temperature", async () => {

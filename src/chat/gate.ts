@@ -27,9 +27,12 @@ export type GateDecision = {
   // Whether to offer web search to the model; the model still decides whether to call it.
   search: boolean;
   reason: string;
-  source: "rule" | "jev" | "fallback";
+  source: "jev" | "fallback";
   scores?: GateScores;
 };
+
+// The window behind the "_last_5min" fields of the state.
+export const PRESENCE_WINDOW_MS = 5 * 60 * 1000;
 
 // Answers are yes-probabilities keyed by question name.
 export type Judge = (state: EntryType, questions: Questions) => Promise<Record<string, number>>;
@@ -103,7 +106,7 @@ export function buildQuestions(botName: string): Questions {
 
 // Only used when jev is unavailable: closing words and bare reactions that need no answer.
 const BARE_REACTION =
-  /^(?:[哈嘿呵嘻hH]+|草+|6+|[嗯恩哦噢喔啊]+|好+的?|好吧|行|ok|收到|懂了|明白了?|谢谢|谢了|多谢|感谢|thx|thanks|拜拜|晚安|[?？!！]+|\[[^\]]+\])+$/i;
+  /^(?:[哈嘿呵嘻hH]+|草+|6+|[嗯恩哦噢喔啊]+|好+的?|好吧|行|ok|收到|懂了|明白了?|谢谢|谢了|多谢|感谢|thx|thanks|拜拜|晚安|[?？!！]+|\[(?:[^\]：]+|表情包：[^\]]+)\])+$/i;
 
 export function isBareReaction(text: string): boolean {
   const core = text.replace(/@\S+/g, "").replace(/[\s,，.。~～…、]+/g, "");
@@ -121,11 +124,8 @@ export async function decide(ctx: GateContext, judge: Judge | undefined): Promis
       const reply = answers.should_reply ?? 0;
       const addressed = answers.addressed ?? 0;
       const search = answers.needs_search ?? 0;
-      const threshold = direct
-        ? config.gate.directThreshold
-        : ctx.scope === "group"
-          ? config.gate.groupThreshold
-          : config.gate.privateThreshold;
+      const base = ctx.scope === "group" ? config.gate.groupThreshold : config.gate.privateThreshold;
+      const threshold = direct ? Math.min(base, config.gate.directThreshold) : base;
       const yes = reply >= threshold;
       return {
         reply: yes,

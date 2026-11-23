@@ -1,9 +1,9 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 
 import { config } from "../config.js";
 import { logger } from "../logger.js";
-import { formatLine, type ChatRecord, type Scope } from "./history.js";
+import { atomicWrite } from "../persist.js";
+import { clock, formatLine, type ChatRecord, type Scope } from "./history.js";
 
 // Facts are kept per scope so a reply can tell what was said in private.
 export type Person = {
@@ -18,12 +18,9 @@ export type ExtractJson = (system: string, user: string) => Promise<unknown>;
 
 const MAX_FACT_CHARS = 60;
 
-function clock(time: number): string {
-  return new Date(time).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit" });
-}
-
 export class MemoryStore {
   private readonly people = new Map<number, Person>();
+  private readonly tails = new Map<string, Promise<void>>();
   private saveTimer: NodeJS.Timeout | undefined;
 
   constructor(
@@ -63,16 +60,61 @@ export class MemoryStore {
     };
     for (const record of records) {
       if (!record.fromBot) add(record.userId, record.name);
-      for (const userId of record.mentions ?? []) add(userId, this.people.get(userId)?.name ?? "");
+      for (const [index, userId] of (record.mentions ?? []).entries()) {
+        const mentioned = record.mentionNames?.[index];
+        const name = (mentioned && mentioned !== "某人" ? mentioned : undefined) ?? this.people.get(userId)?.name ?? "";
+        add(userId, name);
+      }
     }
     return lines;
   }
 
-  async learn(scope: Scope, label: string, records: ChatRecord[], botName: string): Promise<number> {
+  async learn(
+    scope: Scope,
+    label: string,
+    records: ChatRecord[],
+    botName: string,
+    commit: () => boolean = () => true,
+  ): Promise<number> {
     const speakers = new Map<number, string>();
     for (const record of records) if (!record.fromBot) speakers.set(record.userId, record.name);
     if (speakers.size === 0) return 0;
+    const keys = [...speakers.keys()].map((userId) => `user:${userId}`);
+    return this.withLocks(keys, () => this.learnLocked(scope, label, records, botName, speakers, commit));
+  }
 
+  // Later extracts for the same person wait, so they read facts the earlier one already stored.
+  private async withLocks<T>(keys: string[], run: () => Promise<T>): Promise<T> {
+    const ordered = [...new Set(keys)].sort();
+    const releases: (() => void)[] = [];
+    try {
+      for (const key of ordered) {
+        const previous = this.tails.get(key) ?? Promise.resolve();
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        this.tails.set(
+          key,
+          previous.then(() => gate),
+        );
+        await previous;
+        releases.push(release);
+      }
+      return await run();
+    } finally {
+      for (const release of releases) release();
+    }
+  }
+
+  private async learnLocked(
+    scope: Scope,
+    label: string,
+    records: ChatRecord[],
+    botName: string,
+    speakers: Map<number, string>,
+    commit: () => boolean,
+  ): Promise<number> {
     const known = [...speakers].map(([userId, name]) => {
       const facts = this.people.get(userId)?.[scope] ?? [];
       return `- ${name}（QQ ${userId}）：${facts.length > 0 ? facts.join("；") : "无"}`;
@@ -97,6 +139,7 @@ export class MemoryStore {
     ].join("\n");
 
     const result = (await this.extract(system, user)) as { people?: unknown };
+    if (!commit()) return 0;
     let updated = 0;
     for (const entry of Array.isArray(result?.people) ? result.people : []) {
       const userId = Number((entry as { user_id?: unknown }).user_id);
@@ -122,10 +165,7 @@ export class MemoryStore {
   async flush(): Promise<void> {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = undefined;
-    await mkdir(dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    await writeFile(tmp, JSON.stringify([...this.people.values()], null, 2), { mode: 0o600 });
-    await rename(tmp, this.file);
+    await atomicWrite(this.file, JSON.stringify([...this.people.values()], null, 2), 0o600);
   }
 
   private scheduleSave(): void {
