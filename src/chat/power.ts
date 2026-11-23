@@ -1,6 +1,4 @@
-import { readFile } from "node:fs/promises";
-
-import { atomicWrite } from "../persist.js";
+import { atomicWrite, readJson } from "../persist.js";
 
 // Whether the bot is taking part in chats; toggled by admin commands and kept across restarts.
 export class PowerSwitch {
@@ -13,12 +11,8 @@ export class PowerSwitch {
   }
 
   async load(): Promise<void> {
-    try {
-      const state = JSON.parse(await readFile(this.file, "utf8")) as { on?: unknown };
-      this.enabled = state.on !== false;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+    const state = await readJson<{ on?: unknown }>(this.file, { on: this.enabled });
+    this.enabled = state.on !== false;
   }
 
   async set(on: boolean): Promise<void> {

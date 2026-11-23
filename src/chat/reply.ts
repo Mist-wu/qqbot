@@ -5,13 +5,13 @@ import { clock, formatLine, type ChatRecord, type Scope } from "./history.js";
 
 export const SKIP_MARKER = "[不回复]";
 
-export type ReplyContext = {
+type ReplyContext = {
   scope: Scope;
   sessionLabel: string;
   botName: string;
   persona: string;
-  records: ChatRecord[];
-  pending: Set<ChatRecord>;
+  earlier: ChatRecord[];
+  pending: ChatRecord[];
   stickers: { id: number; description: string }[];
   memories: string[];
   now: number;
@@ -26,7 +26,7 @@ export type ReplyPart =
   | { kind: "sticker"; id: number }
   | { kind: "voice"; text: string };
 
-export type Outgoing = { kind: "part"; part: ReplyPart } | { kind: "forward"; text: string };
+type Outgoing = { kind: "part"; part: ReplyPart } | { kind: "forward"; text: string };
 
 const LEAD_MAX_CHARS = 30;
 
@@ -60,10 +60,11 @@ export function buildSystemPrompt(ctx: ReplyContext): string {
 export function buildTranscript(ctx: ReplyContext): string {
   const title = ctx.scope === "group" ? "群聊最近的聊天记录" : "私聊最近的聊天记录";
   const lines = [`${title}（越往下越新，★ 是需要你回应的新消息，“→”后面是这条消息在对谁说）：`];
-  for (const record of ctx.records) {
-    const speaker = record.fromBot ? `${ctx.botName}（你）` : record.name;
-    const mark = ctx.pending.has(record) ? "★" : "";
-    lines.push(`${mark}[${clock(record.time)}] ${formatLine(record, speaker, "你")}`);
+  for (const [mark, records] of [["", ctx.earlier], ["★", ctx.pending]] as const) {
+    for (const record of records) {
+      const speaker = record.fromBot ? `${ctx.botName}（你）` : record.name;
+      lines.push(`${mark}[${clock(record.time)}] ${formatLine(record, speaker, "你")}`);
+    }
   }
   lines.push("", `以「${ctx.botName}」的身份回应。`);
   return lines.join("\n");

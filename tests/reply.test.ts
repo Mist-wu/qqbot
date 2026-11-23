@@ -52,8 +52,8 @@ test("system prompt lists stickers without prescribing style", () => {
     sessionLabel: "测试群",
     botName: "小猫",
     persona: "是群里的一员。",
-    records: [],
-    pending: new Set<never>(),
+    earlier: [],
+    pending: [],
     stickers: [{ id: 3, description: "猫猫叹气" }],
     memories: ["李四：私聊里告诉你的：在北京工作"],
     now: Date.now(),
@@ -72,7 +72,7 @@ test("system prompt lists stickers without prescribing style", () => {
 });
 
 test("transcript stars pending messages and labels the bot", () => {
-  const base = { messageId: 1, userId: 2, time: Date.UTC(2026, 8, 21, 11, 5), atBot: false, replyToBot: false, mentionsBot: false };
+  const base = { messageId: 1, userId: 2, time: Date.UTC(2026, 8, 21, 11, 5), atBot: false, replyToBot: false };
   const bot = { ...base, name: "小猫", text: "在的", fromBot: true };
   const user = { ...base, name: "张三", text: "你好", fromBot: false, atBot: true };
   const transcript = buildTranscript({
@@ -80,8 +80,8 @@ test("transcript stars pending messages and labels the bot", () => {
     sessionLabel: "测试群",
     botName: "小猫",
     persona: "",
-    records: [bot, user],
-    pending: new Set([user]),
+    earlier: [bot],
+    pending: [user],
     stickers: [],
     memories: [],
     now: Date.now(),

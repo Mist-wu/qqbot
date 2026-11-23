@@ -1,12 +1,10 @@
-import { readFile } from "node:fs/promises";
-
 import { config } from "../config.js";
 import { logger } from "../logger.js";
-import { atomicWrite } from "../persist.js";
+import { atomicWrite, readJson } from "../persist.js";
 import { clock, formatLine, type ChatRecord, type Scope } from "./history.js";
 
 // Facts are kept per scope so a reply can tell what was said in private.
-export type Person = {
+type Person = {
   userId: number;
   name: string;
   group: string[];
@@ -14,13 +12,13 @@ export type Person = {
   updatedAt: number;
 };
 
-export type ExtractJson = (system: string, user: string) => Promise<unknown>;
+type ExtractJson = (system: string, user: string) => Promise<unknown>;
 
 const MAX_FACT_CHARS = 60;
 
 export class MemoryStore {
   private readonly people = new Map<number, Person>();
-  private readonly tails = new Map<string, Promise<void>>();
+  private readonly tails = new Map<number, Promise<void>>();
   private saveTimer: NodeJS.Timeout | undefined;
 
   constructor(
@@ -29,12 +27,8 @@ export class MemoryStore {
   ) {}
 
   async load(): Promise<void> {
-    try {
-      const list = JSON.parse(await readFile(this.file, "utf8")) as Person[];
-      for (const person of list) this.people.set(person.userId, person);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+    const people = await readJson<Person[]>(this.file, []);
+    for (const person of people) this.people.set(person.userId, person);
   }
 
   get size(): number {
@@ -49,22 +43,18 @@ export class MemoryStore {
   describe(records: ChatRecord[]): string[] {
     const lines: string[] = [];
     const seen = new Set<number>();
-    const add = (userId: number, name: string) => {
+    const add = (userId: number, name?: string) => {
       if (seen.has(userId)) return;
       seen.add(userId);
       const person = this.people.get(userId);
       if (!person || person.group.length + person.private.length === 0) return;
       const parts = [...person.group];
       if (person.private.length > 0) parts.push(`私聊里告诉你的：${person.private.join("；")}`);
-      lines.push(`${name}：${parts.join("；")}`);
+      lines.push(`${name ?? person.name}：${parts.join("；")}`);
     };
     for (const record of records) {
       if (!record.fromBot) add(record.userId, record.name);
-      for (const [index, userId] of (record.mentions ?? []).entries()) {
-        const mentioned = record.mentionNames?.[index];
-        const name = (mentioned && mentioned !== "某人" ? mentioned : undefined) ?? this.people.get(userId)?.name ?? "";
-        add(userId, name);
-      }
+      for (const [userId, name] of record.mentions ?? []) add(userId, name === "某人" ? undefined : name);
     }
     return lines;
   }
@@ -79,31 +69,16 @@ export class MemoryStore {
     const speakers = new Map<number, string>();
     for (const record of records) if (!record.fromBot) speakers.set(record.userId, record.name);
     if (speakers.size === 0) return 0;
-    const keys = [...speakers.keys()].map((userId) => `user:${userId}`);
-    return this.withLocks(keys, () => this.learnLocked(scope, label, records, botName, speakers, commit));
-  }
-
-  // Later extracts for the same person wait, so they read facts the earlier one already stored.
-  private async withLocks<T>(keys: string[], run: () => Promise<T>): Promise<T> {
-    const ordered = [...new Set(keys)].sort();
-    const releases: (() => void)[] = [];
+    // Reserve all speakers together, so overlapping extracts read the previous result.
+    const ids = [...speakers.keys()];
+    const task = Promise.all(ids.map((id) => this.tails.get(id)))
+      .then(() => this.learnLocked(scope, label, records, botName, speakers, commit));
+    const done = task.then(() => {}, () => {});
+    for (const id of ids) this.tails.set(id, done);
     try {
-      for (const key of ordered) {
-        const previous = this.tails.get(key) ?? Promise.resolve();
-        let release!: () => void;
-        const gate = new Promise<void>((resolve) => {
-          release = resolve;
-        });
-        this.tails.set(
-          key,
-          previous.then(() => gate),
-        );
-        await previous;
-        releases.push(release);
-      }
-      return await run();
+      return await task;
     } finally {
-      for (const release of releases) release();
+      for (const id of ids) if (this.tails.get(id) === done) this.tails.delete(id);
     }
   }
 
@@ -171,7 +146,6 @@ export class MemoryStore {
   private scheduleSave(): void {
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
-      this.saveTimer = undefined;
       void this.flush().catch((error) => logger.warn("[memory] 保存失败:", (error as Error).message));
     }, 2000);
   }

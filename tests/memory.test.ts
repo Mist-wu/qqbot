@@ -12,7 +12,7 @@ const { SessionHistory } = await import("../src/chat/history.js");
 type ChatRecord = Parameters<InstanceType<typeof MemoryStore>["describe"]>[0][number];
 
 function record(userId: number, name: string, text: string, fromBot = false): ChatRecord {
-  return { userId, name, text, time: Date.UTC(2026, 8, 21, 11, 0), fromBot, atBot: false, replyToBot: false, mentionsBot: false };
+  return { userId, name, text, time: Date.UTC(2026, 8, 21, 11, 0), fromBot, atBot: false, replyToBot: false };
 }
 
 async function store(answer: unknown, prompts: string[] = []) {
@@ -116,7 +116,6 @@ test("memories persist privately across restarts", async () => {
 test("history marks survive trimming", () => {
   const history = new SessionHistory(3);
   for (const text of ["1", "2", "3", "4"]) history.add(record(1, "a", text));
-  assert.deepEqual(history.recent(0), []);
   assert.deepEqual(history.since(2).map((r) => r.text), ["3", "4"]);
   assert.deepEqual(history.since(0).map((r) => r.text), ["2", "3", "4"]);
   assert.deepEqual(history.since(4), []);
@@ -125,11 +124,11 @@ test("history marks survive trimming", () => {
 test("people @-mentioned are described too, preferring resolved group names", async () => {
   const { memory } = await store({ people: [{ user_id: 77, facts: ["是群主"] }] });
   await memory.learn("group", "测试群", [record(77, "路人甲", "我是群主")], "OvO");
-  const asked = { ...record(42, "王五", "@OvO 你还记得@路人甲 吗"), mentions: [77] };
+  const asked = { ...record(42, "王五", "@OvO 你还记得@路人甲 吗"), mentions: new Map([[77, undefined]]) };
   assert.deepEqual(memory.describe([asked]), ["路人甲：是群主"]);
-  const renamed = { ...asked, mentionNames: ["老王"] };
+  const renamed = { ...asked, mentions: new Map([[77, "老王"]]) };
   assert.deepEqual(memory.describe([renamed]), ["老王：是群主"]);
-  const unresolved = { ...asked, mentionNames: ["某人"] };
+  const unresolved = { ...asked, mentions: new Map([[77, "某人"]]) };
   assert.deepEqual(memory.describe([unresolved]), ["路人甲：是群主"]);
 });
 

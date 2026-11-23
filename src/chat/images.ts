@@ -1,5 +1,4 @@
 import { config } from "../config.js";
-import { logger } from "../logger.js";
 import type { Segment } from "../napcat/types.js";
 import { MediaCache } from "./media-cache.js";
 import { cleanDescription, dataUrl, downloadImage, type Describe } from "./media.js";
@@ -14,22 +13,13 @@ export class ImageDescriber {
     private readonly cache = new MediaCache(),
   ) {}
 
-  observe(segment: Segment, _commit?: () => boolean): Promise<string | undefined> {
+  observe(segment: Segment): Promise<string | undefined> {
     const url = typeof segment.data.url === "string" ? segment.data.url : undefined;
     if (!url) return Promise.resolve(undefined);
     const key = typeof segment.data.file === "string" && segment.data.file ? segment.data.file : url;
-    return this.cache.get(`image:${key}`, () => this.run(url));
-  }
-
-  private async run(url: string): Promise<string | undefined> {
-    try {
+    return this.cache.get("image", key, async () => {
       const image = await downloadImage(url, config.images.maxBytes);
-      const description = cleanDescription(await this.describe(dataUrl(image), DESCRIBE_PROMPT)).slice(0, MAX_CHARS);
-      if (description) logger.info(`[image] ${description}`);
-      return description || undefined;
-    } catch (error) {
-      logger.debug("[image] 跳过:", (error as Error).message);
-      return undefined;
-    }
+      return cleanDescription(await this.describe(dataUrl(image), DESCRIBE_PROMPT)).slice(0, MAX_CHARS);
+    });
   }
 }

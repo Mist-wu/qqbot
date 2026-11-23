@@ -3,7 +3,7 @@ export type Segment = {
   data: Record<string, unknown>;
 };
 
-export type Sender = {
+type Sender = {
   user_id: number;
   nickname?: string;
   card?: string;

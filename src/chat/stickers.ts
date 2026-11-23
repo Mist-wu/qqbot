@@ -4,11 +4,11 @@ import { join } from "node:path";
 
 import { config } from "../config.js";
 import { logger } from "../logger.js";
-import { atomicWrite } from "../persist.js";
+import { atomicWrite, readJson } from "../persist.js";
 import type { Segment } from "../napcat/types.js";
 import { cleanDescription, dataUrl, downloadImage, type Describe } from "./media.js";
 
-export type Sticker = {
+type Sticker = {
   id: number;
   key: string;
   file: string;
@@ -48,12 +48,11 @@ export class StickerStore {
 
   async load(): Promise<void> {
     await mkdir(this.dir, { recursive: true });
-    try {
-      const list = JSON.parse(await readFile(join(this.dir, "index.json"), "utf8")) as Sticker[];
-      for (const sticker of list) this.stickers.set(sticker.key, { ...sticker, description: cleanDescription(sticker.description) });
-      this.nextId = Math.max(0, ...list.map((sticker) => sticker.id)) + 1;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const list = await readJson<Sticker[]>(join(this.dir, "index.json"), []);
+    for (const sticker of list) {
+      sticker.description = cleanDescription(sticker.description);
+      this.stickers.set(sticker.key, sticker);
+      this.nextId = Math.max(this.nextId, sticker.id + 1);
     }
   }
 
@@ -165,7 +164,6 @@ export class StickerStore {
   private scheduleSave(): void {
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
-      this.saveTimer = undefined;
       void this.flush().catch((error) => logger.warn("[sticker] 保存索引失败:", (error as Error).message));
     }, 2000);
   }

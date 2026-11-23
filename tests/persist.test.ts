@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile } from "node:fs/promises";
+import files, { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
 process.env.LOG_LEVEL = "silent";
 
-const { files } = await import("../src/persist.js");
 const { MemoryStore } = await import("../src/chat/memory.js");
 const { StickerStore } = await import("../src/chat/stickers.js");
 
@@ -23,7 +22,6 @@ function record(text: string) {
     fromBot: false,
     atBot: false,
     replyToBot: false,
-    mentionsBot: false,
   };
 }
 

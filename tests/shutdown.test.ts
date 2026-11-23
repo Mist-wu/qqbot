@@ -78,21 +78,22 @@ test("stopping during the send gap drops the group message and still delivers th
   const file = join(await mkdtemp(join(tmpdir(), "qqbot-stop-")), "state.json");
   const power = new PowerSwitch(file);
   await power.load();
-  let releaseJudge!: () => void;
-  let entered!: () => void;
-  const judging = new Promise<void>((resolve) => {
-    entered = resolve;
+  const stopped = Promise.withResolvers<void>();
+  const setPower = power.set.bind(power);
+  t.mock.method(power, "set", async (on: boolean) => {
+    await setPower(on);
+    stopped.resolve();
   });
+  const judging = Promise.withResolvers<void>();
+  const judged = Promise.withResolvers<void>();
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ choices: [{ message: { content: "不该发出" } }] }), { status: 200 })) as typeof fetch;
   const runtime = new ChatRuntime({
     client,
     power,
     judge: async () => {
-      entered();
-      await new Promise<void>((resolve) => {
-        releaseJudge = resolve;
-      });
+      judging.resolve();
+      await judged.promise;
       return { should_reply: 0.9 };
     },
   });
@@ -105,13 +106,13 @@ test("stopping during the send gap drops the group message and still delivers th
     config.napcat.sendIntervalMs = 30_000;
     runtime.handle(group("在吗"));
     t.mock.timers.tick(1000);
-    await judging;
-    releaseJudge();
+    await judging.promise;
+    judged.resolve();
     await drain();
     assert.equal(actions.includes("send_group_msg"), false);
     assert.equal(actions.includes("send_group_forward_msg"), false);
     runtime.handle(command("/停止"));
-    for (let i = 0; i < 20 && power.on; i++) await drain();
+    await stopped.promise;
     assert.equal(power.on, false);
     for (let i = 0; i < 3; i++) {
       t.mock.timers.tick(30_000);
@@ -269,7 +270,6 @@ test("memory extraction in flight is dropped on stop and a later learn can still
       fromBot: false,
       atBot: false,
       replyToBot: false,
-      mentionsBot: false,
     },
   ], "小猫");
   await memory.flush();

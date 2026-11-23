@@ -1,3 +1,6 @@
+import { atTargets, renderSegments, type RenderContext } from "../napcat/message.js";
+import type { MessageEvent, Segment } from "../napcat/types.js";
+
 export type Scope = "group" | "private";
 
 export type Quote = { name: string; text: string; fromBot: boolean };
@@ -11,15 +14,35 @@ export type ChatRecord = {
   fromBot: boolean;
   atBot: boolean;
   replyToBot: boolean;
-  mentionsBot: boolean;
   // Other users @-mentioned in this message, and their display names once resolved.
-  mentions?: number[];
-  mentionNames?: string[];
+  mentions?: Map<number, string | undefined>;
   // The message this one replies to.
   quote?: Quote;
   // Resolves once sticker descriptions, @ names and the quote have been filled in.
   ready?: Promise<void>;
 };
+
+export function recordFromMessage(
+  event: MessageEvent,
+  segments: Segment[],
+  ctx: RenderContext & { selfId: number },
+): ChatRecord & { mentions: Map<number, string | undefined> } {
+  const fromBot = event.user_id === ctx.selfId;
+  const mentions = atTargets(segments);
+  const atBot = mentions.delete(ctx.selfId);
+  for (const [id, name] of mentions) mentions.set(id, name ?? ctx.atName?.(id));
+  return {
+    messageId: event.message_id,
+    userId: event.user_id,
+    name: fromBot ? ctx.botName : event.sender?.card || event.sender?.nickname || String(event.user_id),
+    text: renderSegments(segments, ctx),
+    time: event.time * 1000,
+    fromBot,
+    atBot,
+    replyToBot: false,
+    mentions,
+  };
+}
 
 const QUOTE_MAX_CHARS = 60;
 
@@ -44,7 +67,8 @@ export function clock(time: number): string {
 // Who a message is aimed at, and what it quotes, so a reader can follow who is talking to whom.
 // `self` is how the bot is referred to (e.g. "你" in its own prompt).
 export function relation(record: ChatRecord, self: string): { to: string[]; quote?: string } {
-  const to = [...(record.atBot ? [self] : []), ...(record.mentionNames ?? [])];
+  const to = record.atBot ? [self] : [];
+  for (const name of record.mentions?.values() ?? []) to.push(name ?? "某人");
   const quoted = record.quote;
   if (to.length === 0 && quoted) to.push(quoted.fromBot ? self : quoted.name);
   if (!quoted) return { to };
@@ -92,10 +116,6 @@ export class SessionHistory {
     return this.botMessageIds.has(messageId);
   }
 
-  recent(count: number): ChatRecord[] {
-    return count > 0 ? this.records.slice(-count) : [];
-  }
-
   since(mark: number): ChatRecord[] {
     const count = Math.min(this.records.length, this.total - mark);
     return count > 0 ? this.records.slice(-count) : [];
@@ -107,11 +127,6 @@ export class SessionHistory {
 
   last(): ChatRecord | undefined {
     return this.records.at(-1);
-  }
-
-  // Shallow copy of the records held right now. Later arrivals and trims do not change it.
-  snapshot(): ChatRecord[] {
-    return this.records.slice();
   }
 
   presence(windowMs: number, now: number): Presence {

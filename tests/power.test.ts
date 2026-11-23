@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import files, { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -16,7 +16,6 @@ process.env.LOG_LEVEL = "silent";
 
 const { ChatRuntime } = await import("../src/chat/runtime.js");
 const { PowerSwitch } = await import("../src/chat/power.js");
-const { files } = await import("../src/persist.js");
 type Deps = ConstructorParameters<typeof ChatRuntime>[0];
 
 let nextId = 1;
@@ -43,25 +42,11 @@ const message = (type: "group" | "private", userId: number, text: string) => ({
 test("admin /停止 and /启动 in private chat pause and resume the bot, across restarts", async () => {
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ choices: [{ message: { content: "在" } }] }), { status: 200 })) as typeof fetch;
-  const sent: { target: unknown; text: unknown }[] = [];
   let judged = 0;
-  const client = {
-    selfId: 100,
-    sendMessage: async (target: unknown, message: { data: { text?: string } }[]) => {
-      sent.push({ target, text: message[0]!.data.text });
-      return nextId++;
-    },
-    sendForward: async () => nextId++,
-    callAction: async () => ({ status: "ok" as const, retcode: 0, data: {} }),
-  } as unknown as Deps["client"];
-  const judge = async () => {
+  const { power, file, sent, runtime } = await harness(async () => {
     judged++;
     return { should_reply: 0.9 };
-  };
-  const file = join(await mkdtemp(join(tmpdir(), "qqbot-power-")), "state.json");
-  const power = new PowerSwitch(file);
-  await power.load();
-  const runtime = new ChatRuntime({ client, judge, stickers: undefined, memory: undefined, power });
+  });
 
   runtime.handle(message("private", 42, "/停止"));
   await wait(50);
@@ -109,20 +94,7 @@ test("/停止 mid-flight cancels an in-progress reply, including after /启动",
     });
     return new Response(JSON.stringify({ choices: [{ message: { content: "不该发出" } }] }), { status: 200 });
   }) as typeof fetch;
-  const sent: { target: unknown; text: unknown }[] = [];
-  const client = {
-    selfId: 100,
-    sendMessage: async (target: unknown, message: { data: { text?: string } }[]) => {
-      sent.push({ target, text: message[0]!.data.text });
-      return nextId++;
-    },
-    sendForward: async () => nextId++,
-    callAction: async () => ({ status: "ok" as const, retcode: 0, data: {} }),
-  } as unknown as Deps["client"];
-  const file = join(await mkdtemp(join(tmpdir(), "qqbot-power-")), "state.json");
-  const power = new PowerSwitch(file);
-  await power.load();
-  const runtime = new ChatRuntime({ client, power, judge: async () => ({ should_reply: 0.9 }) });
+  const { power, sent, runtime } = await harness(async () => ({ should_reply: 0.9 }));
 
   runtime.handle(message("group", 7, "在吗"));
   await generating;
@@ -139,7 +111,7 @@ test("/停止 mid-flight cancels an in-progress reply, including after /启动",
   );
 });
 
-async function harness() {
+async function harness(judge = async () => ({ should_reply: 0 })) {
   const sent: { target: unknown; text: unknown }[] = [];
   const client = {
     selfId: 100,
@@ -153,7 +125,7 @@ async function harness() {
   const file = join(await mkdtemp(join(tmpdir(), "qqbot-power-")), "state.json");
   const power = new PowerSwitch(file);
   await power.load();
-  const runtime = new ChatRuntime({ client, power, judge: async () => ({ should_reply: 0 }) });
+  const runtime = new ChatRuntime({ client, power, judge });
   return { sent, file, power, runtime };
 }
 
@@ -161,83 +133,47 @@ function textsOf(sent: { text: unknown }[]) {
   return sent.map((item) => item.text);
 }
 
-test("stop then start runs in receive order while the first write is paused", async () => {
-  const { sent, file, power, runtime } = await harness();
-  const original = files.rename;
-  let release!: () => void;
-  let entered!: () => void;
-  const paused = new Promise<void>((resolve) => {
-    entered = resolve;
-  });
-  let hangs = 0;
-  files.rename = (async (from: string, to: string) => {
-    if (String(to).endsWith("state.json") && hangs++ === 0) {
-      entered();
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
+for (const initiallyOn of [true, false]) {
+  test(`commands run in receive order while the first write is paused (initially on: ${initiallyOn})`, async () => {
+    const { sent, file, power, runtime } = await harness();
+    if (!initiallyOn) await power.set(false);
+    const original = files.rename;
+    let release!: () => void;
+    let entered!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let hangs = 0;
+    files.rename = (async (from: string, to: string) => {
+      if (String(to).endsWith("state.json") && hangs++ === 0) {
+        entered();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return original(from, to);
+    }) as typeof files.rename;
+    try {
+      runtime.handle(message("private", 42, initiallyOn ? "/停止" : "/启动"));
+      await paused;
+      runtime.handle(message("private", 42, initiallyOn ? "/启动" : "/停止"));
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      assert.deepEqual(textsOf(sent), []);
+      assert.equal(power.on, initiallyOn);
+      release();
+      await until(() => sent.length >= 2);
+      const stopped = "小猫 已停止，群聊和私聊都不再回复，发 /启动 恢复";
+      const started = "小猫 已启动";
+      assert.deepEqual(textsOf(sent), initiallyOn ? [stopped, started] : [started, stopped]);
+      assert.equal(power.on, initiallyOn);
+      const reloaded = new PowerSwitch(file);
+      await reloaded.load();
+      assert.equal(reloaded.on, initiallyOn);
+    } finally {
+      files.rename = original;
     }
-    return original(from, to);
-  }) as typeof files.rename;
-  try {
-    runtime.handle(message("private", 42, "/停止"));
-    await paused;
-    runtime.handle(message("private", 42, "/启动"));
-    for (let i = 0; i < 20; i++) await Promise.resolve();
-    assert.deepEqual(textsOf(sent), []);
-    assert.equal(power.on, true);
-    release();
-    await until(() => sent.length >= 2);
-    assert.deepEqual(textsOf(sent), [
-      "小猫 已停止，群聊和私聊都不再回复，发 /启动 恢复",
-      "小猫 已启动",
-    ]);
-    assert.equal(power.on, true);
-    const reloaded = new PowerSwitch(file);
-    await reloaded.load();
-    assert.equal(reloaded.on, true);
-  } finally {
-    files.rename = original;
-  }
-});
-
-test("start then stop runs in receive order while the first write is paused", async () => {
-  const { sent, file, power, runtime } = await harness();
-  await power.set(false);
-  const original = files.rename;
-  let release!: () => void;
-  let entered!: () => void;
-  const paused = new Promise<void>((resolve) => {
-    entered = resolve;
   });
-  let hangs = 0;
-  files.rename = (async (from: string, to: string) => {
-    if (String(to).endsWith("state.json") && hangs++ === 0) {
-      entered();
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
-    }
-    return original(from, to);
-  }) as typeof files.rename;
-  try {
-    runtime.handle(message("private", 42, "/启动"));
-    await paused;
-    runtime.handle(message("private", 42, "/停止"));
-    for (let i = 0; i < 20; i++) await Promise.resolve();
-    assert.deepEqual(textsOf(sent), []);
-    assert.equal(power.on, false);
-    release();
-    await until(() => sent.length >= 2);
-    assert.deepEqual(textsOf(sent), ["小猫 已启动", "小猫 已停止，群聊和私聊都不再回复，发 /启动 恢复"]);
-    assert.equal(power.on, false);
-    const reloaded = new PowerSwitch(file);
-    await reloaded.load();
-    assert.equal(reloaded.on, false);
-  } finally {
-    files.rename = original;
-  }
-});
+}
 
 test("a failed switch write keeps the old state and the next command still runs", async () => {
   const { sent, file, power, runtime } = await harness();

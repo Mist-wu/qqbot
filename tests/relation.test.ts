@@ -24,9 +24,7 @@ test("replying to the bot while @-ing someone else names the same recipients in 
     fromBot: false,
     atBot: true,
     replyToBot: true,
-    mentionsBot: true,
-    mentions: [9],
-    mentionNames: ["李四"],
+    mentions: new Map([[9, "李四"]]),
     quote: { name: "小猫", text: "刚才那句", fromBot: true },
   };
   const state = buildState({
@@ -48,8 +46,8 @@ test("replying to the bot while @-ing someone else names the same recipients in 
     sessionLabel: "测试群",
     botName: "小猫",
     persona: "群友",
-    records: [record],
-    pending: new Set([record]),
+    earlier: [],
+    pending: [record],
     stickers: [],
     memories: [],
     now,

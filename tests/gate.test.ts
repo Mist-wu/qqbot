@@ -23,7 +23,6 @@ function record(overrides: Partial<ChatRecord> = {}): ChatRecord {
     fromBot: false,
     atBot: false,
     replyToBot: false,
-    mentionsBot: false,
     ...overrides,
   };
 }
@@ -96,7 +95,7 @@ test("falls back to hard rules when jev fails or is missing", async () => {
     throw new Error("boom");
   };
   assert.equal((await decide(context(), failing)).reply, false);
-  assert.equal((await decide(context({ pending: [record({ mentionsBot: true })] }), failing)).reply, true);
+  assert.equal((await decide(context({ pending: [record({ text: "小猫在哪" })] }), failing)).reply, true);
   assert.equal((await decide(context({ scope: "private" }), undefined)).reply, true);
   assert.equal((await decide(context(), undefined)).source, "fallback");
   const at = (text: string) => context({ pending: [record({ atBot: true, text })] });

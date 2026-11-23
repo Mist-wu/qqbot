@@ -69,9 +69,7 @@ test("same-page @, quote and voice keep structured fields without extra fetches"
   assert.equal(quoted.text, "@小猫 @王五 [语音]");
   assert.equal(quoted.atBot, true);
   assert.equal(quoted.replyToBot, true);
-  assert.equal(quoted.mentionsBot, true);
-  assert.deepEqual(quoted.mentions, [8]);
-  assert.deepEqual(quoted.mentionNames, ["王五"]);
+  assert.deepEqual(quoted.mentions, new Map([[8, "王五"]]));
   assert.deepEqual(quoted.quote, { name: "小猫", text: "你好", fromBot: true });
   assert.equal(records[2]!.text, "[CQ:at,qq=100] 喂");
   assert.equal(records[2]!.atBot, false);
@@ -98,7 +96,6 @@ function harness(options: { failHistory?: boolean; failFlush?: boolean; messages
       groups: [500],
       privateUsers: [] as number[],
       botName: "小猫",
-      aliases: [],
       log: () => undefined,
       client: {
         whenOpen: async () => undefined,

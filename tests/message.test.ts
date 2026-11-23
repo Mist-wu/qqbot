@@ -4,7 +4,6 @@ import { test } from "node:test";
 import {
   atTargets,
   markdownToText,
-  isAtSelf,
   renderSegments,
   replyTargetId,
   textToSegments,
@@ -23,8 +22,8 @@ test("renders text, at and media placeholders", () => {
     { type: "face", data: { id: "14" } },
   ]);
   assert.equal(renderSegments(segments, ctx), "@小猫 你看这个[图片]@张三 [微笑]");
-  assert.equal(isAtSelf(segments, 100), true);
-  assert.equal(isAtSelf(segments, 999), false);
+  assert.equal(atTargets(segments).has(100), true);
+  assert.equal(atTargets(segments).has(999), false);
   assert.equal(replyTargetId(segments), 55);
 });
 
@@ -70,7 +69,7 @@ test("empty at/reply ids are ignored instead of treated as 0", () => {
     { type: "toString", data: {} },
   ]);
   assert.equal(replyTargetId(segments), undefined);
-  assert.deepEqual(atTargets(segments, 100), []);
+  assert.deepEqual([...atTargets(segments)], []);
   assert.equal(renderSegments(segments, ctx), "@某人 [toString]");
 });
 
@@ -84,7 +83,7 @@ test("@ of other users shows a name, never the raw QQ number", () => {
   ]);
   const atName = (id: number) => (id === 123456789 ? "路人甲" : undefined);
   assert.equal(renderSegments(segments, { ...ctx, atName }), "@小猫 你还记得@路人甲 吗@某人");
-  assert.deepEqual(atTargets(segments, 100), [123456789, 555]);
+  assert.deepEqual([...atTargets(segments).keys()], [100, 123456789, 555]);
 });
 
 test("markdown messages render once, without LaTeX styling", () => {

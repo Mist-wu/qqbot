@@ -4,8 +4,6 @@ import { config } from "../config.js";
 import { logger } from "../logger.js";
 import type { NapcatClient, SendTarget } from "../napcat/client.js";
 import {
-  atTargets,
-  isAtSelf,
   isSticker,
   renderSegments,
   replySegment,
@@ -16,7 +14,7 @@ import {
 } from "../napcat/message.js";
 import type { MessageEvent, Segment } from "../napcat/types.js";
 import { PRESENCE_WINDOW_MS, decide, type GateDecision, type Judge } from "./gate.js";
-import { SessionHistory, formatLine, presenceOf, type ChatRecord, type Quote, type Scope } from "./history.js";
+import { SessionHistory, formatLine, presenceOf, recordFromMessage, type ChatRecord, type Quote, type Scope } from "./history.js";
 import type { ImageDescriber } from "./images.js";
 import type { MemoryStore } from "./memory.js";
 import type { PowerSwitch } from "./power.js";
@@ -38,7 +36,7 @@ type Session = {
   learnTimer: NodeJS.Timeout | undefined;
 };
 
-export type RuntimeDeps = {
+type RuntimeDeps = {
   client: Pick<NapcatClient, "selfId" | "sendMessage" | "sendForward" | "callAction">;
   power: Pick<PowerSwitch, "on" | "set">;
   judge?: Judge | undefined;
@@ -79,7 +77,9 @@ export class ChatRuntime {
       const command = renderSegments(toSegments(event.message), { botName: config.bot.name });
       const on = COMMANDS.get(command);
       if (on !== undefined) {
-        void this.command(event.user_id, on);
+        this.commandChain = this.commandChain.then(() => this.applyCommand(event.user_id, on)).catch((error) => {
+          logger.error("[admin] 命令执行失败:", error);
+        });
         return;
       }
     }
@@ -97,36 +97,21 @@ export class ChatRuntime {
     const atName = (userId: number) =>
       groupId === undefined ? undefined : this.memberNames.get(`${groupId}:${userId}`);
     const renderContext = { selfId, botName: config.bot.name, atName };
-    const text = renderSegments(segments, renderContext);
-    if (!text) return;
+    const record = recordFromMessage(event, segments, renderContext);
+    if (!record.text) return;
+    if (!event.time) record.time = Date.now();
 
     const session = this.session(event);
     const epoch = this.epoch;
     const commit = () => this.current(epoch);
     const replyTo = replyTargetId(segments);
-    const names = [config.bot.name, ...config.bot.aliases];
-    const mentions = atTargets(segments, selfId);
-    const record: ChatRecord = {
-      messageId: event.message_id,
-      userId: event.user_id,
-      name: senderName,
-      text,
-      time: event.time ? event.time * 1000 : Date.now(),
-      fromBot: false,
-      atBot: isAtSelf(segments, selfId),
-      replyToBot: replyTo !== undefined && session.history.isBotMessage(replyTo),
-      mentionsBot: names.some((name) => name && text.includes(name)),
-      mentions,
-    };
+    record.replyToBot = replyTo !== undefined && session.history.isBotMessage(replyTo);
 
     // A quoted message is found in history when possible, otherwise fetched from NapCat.
     const known = replyTo !== undefined ? session.history.byId(replyTo) : undefined;
     if (known) record.quote = { name: known.name, text: known.text, fromBot: known.fromBot };
-    const nameMentions = () => mentions.map((userId) => atName(userId) ?? "某人");
-    record.mentionNames = nameMentions();
-
     const media = segments.filter((seg) => MEDIA_TYPES.has(seg.type));
-    const unknownNames = groupId === undefined ? [] : mentions.filter((userId) => atName(userId) === undefined);
+    const unknownNames = groupId === undefined ? [] : [...record.mentions.keys()].filter((id) => !atName(id));
     const fetchQuote = replyTo !== undefined && !known;
     if (media.length > 0 || unknownNames.length > 0 || fetchQuote) {
       record.ready = Promise.all([
@@ -140,8 +125,9 @@ export class ChatRuntime {
         ...unknownNames.map((userId) => this.lookupMember(groupId!, userId)),
       ]).then(([descriptions]) => {
         record.text = renderSegments(segments, { ...renderContext, mediaText: (seg) => descriptions.get(seg) });
-        record.mentionsBot = names.some((name) => name && record.text.includes(name));
-        record.mentionNames = nameMentions();
+        for (const id of unknownNames) {
+          if (!record.mentions.get(id)) record.mentions.set(id, atName(id));
+        }
       });
     }
     session.history.add(record);
@@ -176,15 +162,6 @@ export class ChatRuntime {
     return session;
   }
 
-  private command(userId: number, on: boolean): Promise<void> {
-    const run = this.commandChain.then(() => this.applyCommand(userId, on));
-    this.commandChain = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
-  }
-
   private async applyCommand(userId: number, on: boolean): Promise<void> {
     const power = this.deps.power;
     let reply: string;
@@ -210,10 +187,6 @@ export class ChatRuntime {
 
   private invalidate(): void {
     this.epoch++;
-    this.dropPending();
-  }
-
-  private dropPending(): void {
     for (const session of this.sessions.values()) {
       if (session.timer) clearTimeout(session.timer);
       if (session.learnTimer) clearTimeout(session.learnTimer);
@@ -308,9 +281,8 @@ export class ChatRuntime {
     const pending = session.pending.splice(0);
     session.firstPendingAt = undefined;
     const pendingSet = new Set(pending);
-    const history = session.history.snapshot();
-    const kept = history.filter((record) => !pendingSet.has(record));
-    const records = [...kept.slice(-config.history.contextMessages), ...pending];
+    const kept = session.history.since(0).filter((record) => !pendingSet.has(record));
+    const earlier = kept.slice(-config.history.contextMessages);
     const presenceRecords = [...kept, ...pending];
     try {
       const ready = pending.map((record) => record.ready).filter((task): task is Promise<void> => task !== undefined);
@@ -331,7 +303,7 @@ export class ChatRuntime {
           botName: config.bot.name,
           aliases: config.bot.aliases,
           persona: config.bot.persona,
-          earlier: records.filter((record) => !pendingSet.has(record)),
+          earlier,
           pending,
           presence: presenceOf(presenceRecords, PRESENCE_WINDOW_MS, now),
           now,
@@ -340,7 +312,7 @@ export class ChatRuntime {
       );
       if (!this.current(epoch)) return;
       logger.info(`[gate] ${session.key} ${formatDecision(decision)} :: ${summarize(pending)}`);
-      if (decision.reply) await this.reply(session, records, pendingSet, decision.search, epoch);
+      if (decision.reply) await this.reply(session, earlier, pending, decision.search, epoch);
     } catch (error) {
       logger.error(`[chat] ${session.key} 处理失败:`, (error as Error).message);
     } finally {
@@ -351,17 +323,18 @@ export class ChatRuntime {
 
   private async reply(
     session: Session,
-    records: ChatRecord[],
-    pending: Set<ChatRecord>,
+    earlier: ChatRecord[],
+    pending: ChatRecord[],
     withSearch: boolean,
     epoch: number,
   ): Promise<void> {
+    const records = [...earlier, ...pending];
     const generated = await generateReply({
       scope: session.scope,
       sessionLabel: session.label,
       botName: config.bot.name,
       persona: config.bot.persona,
-      records,
+      earlier,
       pending,
       stickers: this.deps.stickers?.list() ?? [],
       memories: this.deps.memory?.describe(records) ?? [],
@@ -378,8 +351,7 @@ export class ChatRuntime {
       return;
     }
 
-    const list = [...pending];
-    const target = list.findLast((record) => record.atBot || record.replyToBot) ?? list.at(-1)!;
+    const target = pending.findLast((record) => record.atBot || record.replyToBot) ?? pending.at(-1)!;
     // Quote only when the conversation moved on while the reply was being written.
     let needQuote =
       session.scope === "group" && target.messageId !== undefined && session.history.last() !== target;
@@ -409,7 +381,7 @@ export class ChatRuntime {
     if (current()) this.scheduleLearn(session, config.memory.learnDelayMs, epoch);
   }
 
-  private scheduleLearn(session: Session, delay: number, epoch = this.epoch): void {
+  private scheduleLearn(session: Session, delay: number, epoch: number): void {
     if (!this.deps.memory || !this.current(epoch)) return;
     if (session.learnTimer) clearTimeout(session.learnTimer);
     session.learnTimer = setTimeout(() => void this.learn(session, epoch), delay);
@@ -420,7 +392,6 @@ export class ChatRuntime {
     if (!this.current(epoch)) return;
     const records = session.history.since(session.learnedMark);
     session.learnedMark = session.history.total;
-    if (!records.some((record) => !record.fromBot)) return;
     try {
       await this.deps.memory!.learn(session.scope, session.label, records, config.bot.name, () => this.current(epoch));
     } catch (error) {
@@ -466,7 +437,6 @@ export class ChatRuntime {
       fromBot: true,
       atBot: false,
       replyToBot: false,
-      mentionsBot: false,
     });
     logger.info(`[send] ${session.key} ${text}`);
   }

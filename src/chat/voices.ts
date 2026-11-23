@@ -1,12 +1,11 @@
 import { readFile } from "node:fs/promises";
 
 import { config } from "../config.js";
-import { logger } from "../logger.js";
 import type { NapcatClient } from "../napcat/client.js";
 import type { Segment } from "../napcat/types.js";
 import { MediaCache } from "./media-cache.js";
 
-export type Transcribe = (audio: Buffer) => Promise<string>;
+type Transcribe = (audio: Buffer) => Promise<string>;
 
 type RecordFile = { file?: string; base64?: string };
 
@@ -21,23 +20,14 @@ export class VoiceTranscriber {
     private readonly cache = new MediaCache(),
   ) {}
 
-  observe(segment: Segment, _commit?: () => boolean): Promise<string | undefined> {
-    const file = typeof segment.data.file === "string" && segment.data.file ? segment.data.file : undefined;
-    if (!file) return Promise.resolve(undefined);
-    return this.cache.get(`voice:${file}`, () => this.run(file));
-  }
-
-  private async run(file: string): Promise<string | undefined> {
-    try {
+  observe(segment: Segment): Promise<string | undefined> {
+    const file = segment.data.file;
+    if (typeof file !== "string" || !file) return Promise.resolve(undefined);
+    return this.cache.get("voice", file, async () => {
       const audio = await this.download(file);
       if (audio.length > config.voices.maxBytes) throw new Error(`太大 ${audio.length}`);
-      const text = (await this.transcribe(audio)).replace(/\s+/g, " ").trim().slice(0, MAX_CHARS);
-      if (text) logger.info(`[voice] ${text}`);
-      return text || undefined;
-    } catch (error) {
-      logger.debug("[voice] 跳过:", (error as Error).message);
-      return undefined;
-    }
+      return (await this.transcribe(audio)).replace(/\s+/g, " ").trim().slice(0, MAX_CHARS);
+    });
   }
 
   private async download(file: string): Promise<Buffer> {

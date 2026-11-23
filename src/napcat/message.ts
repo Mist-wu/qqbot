@@ -124,14 +124,16 @@ export function isSticker(segment: Segment): boolean {
   return segment.type === "image" && (Number(segment.data.sub_type) === 1 || segment.data.summary === "[动画表情]");
 }
 
-export function isAtSelf(segments: Segment[], selfId: number | undefined): boolean {
-  if (selfId === undefined) return false;
-  return segments.some((seg) => seg.type === "at" && asId(seg.data.qq) === selfId);
-}
-
-export function atTargets(segments: Segment[], selfId: number | undefined): number[] {
-  const ids = segments.filter((seg) => seg.type === "at").map((seg) => asId(seg.data.qq));
-  return [...new Set(ids.filter((id): id is number => id !== undefined && id !== selfId))];
+export function atTargets(segments: Segment[]): Map<number, string | undefined> {
+  const targets = new Map<number, string | undefined>();
+  for (const seg of segments) {
+    if (seg.type !== "at") continue;
+    const id = asId(seg.data.qq);
+    if (id === undefined || targets.get(id)) continue;
+    const name = seg.data.name;
+    targets.set(id, typeof name === "string" && name ? name : undefined);
+  }
+  return targets;
 }
 
 export function replyTargetId(segments: Segment[]): number | undefined {

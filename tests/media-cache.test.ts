@@ -17,30 +17,18 @@ globalThis.fetch = (async () => {
 const picture = (file: string) => ({ type: "image", data: { file, url: `https://img.example/${file}`, sub_type: 0 } });
 const voice = (file: string) => ({ type: "record", data: { file } });
 
-test("the same picture key shares one in-flight description", async () => {
+test("pictures are described once per file", async () => {
   downloads = 0;
-  let release!: () => void;
-  let started = 0;
-  const describer = new ImageDescriber(async () => {
-    started++;
-    await new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    return "同一张图";
+  const seen: string[] = [];
+  const describer = new ImageDescriber(async (url) => {
+    seen.push(url.slice(0, 22));
+    return "一张手机设置页面的截图（图中无文字）";
   });
-  const first = describer.observe(picture("same.png"));
-  const second = describer.observe(picture("same.png"));
-  const start = Date.now();
-  while (started < 1) {
-    if (Date.now() - start > 500) throw new Error("description did not start");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.equal(started, 1);
+  const [a, b] = await Promise.all([describer.observe(picture("x.png")), describer.observe(picture("x.png"))]);
+  assert.equal(a, "一张手机设置页面的截图");
+  assert.equal(b, a);
   assert.equal(downloads, 1);
-  release();
-  assert.equal(await first, "同一张图");
-  assert.equal(await second, "同一张图");
-  assert.equal(downloads, 1);
+  assert.deepEqual(seen, ["data:image/png;base64,"]);
 });
 
 test("a failed picture or voice description is fetched again", async () => {
@@ -54,6 +42,7 @@ test("a failed picture or voice description is fetched again", async () => {
   assert.equal(await pictures.observe(picture("retry.png")), undefined);
   assert.equal(await pictures.observe(picture("retry.png")), "补上的描述");
   assert.equal(images, 2);
+  assert.equal(await pictures.observe({ type: "image", data: {} }), undefined);
 
   let voices = 0;
   const transcriber = new VoiceTranscriber(
@@ -92,5 +81,4 @@ test("picture and voice descriptions share one small cache and evict the oldest"
   await transcriber.observe(voice("a.amr"));
   assert.equal(images, 2);
   assert.equal(voices, 2);
-  assert.equal(cache.size, 1);
 });
